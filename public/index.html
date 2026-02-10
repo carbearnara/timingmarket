@@ -536,18 +536,18 @@ async function fetchDBLatest() {
 function computeAnalyticsFromDB(snapshots, liveData) {
   if (!snapshots || snapshots.length === 0) throw new Error('No DB snapshots');
 
-  // Build nav/pnl history from snapshots (skip NULL pnl rows for PnL chart)
+  // Build nav history from snapshots
   const navHistory = snapshots.map(s => ({
     time: new Date(s.collected_at).getTime(),
     value: parseFloat(s.nav)
   })).filter(d => d.value > 0);
 
-  const pnlHistory = snapshots
-    .filter(s => s.pnl != null)
-    .map(s => ({
-      time: new Date(s.collected_at).getTime(),
-      value: parseFloat(s.pnl)
-    }));
+  // Derive cumulative PnL from NAV changes (avoids mixing incompatible timeframe PnL values)
+  const baseNav = navHistory.length > 0 ? navHistory[0].value : 0;
+  const pnlHistory = navHistory.map(d => ({
+    time: d.time,
+    value: d.value - baseNav
+  }));
 
   const currentNav = liveData ? liveData.nav : navHistory[navHistory.length - 1]?.value || 0;
   const currentPnl = liveData ? liveData.pnl : pnlHistory[pnlHistory.length - 1]?.value || 0;
@@ -568,18 +568,27 @@ function computeAnalyticsFromDB(snapshots, liveData) {
     if (d.value < maxDD) maxDD = d.value;
   }
 
-  // Period returns
+  // Aggregate to one NAV per calendar day (last value wins) to avoid
+  // zig-zag from mixed-granularity sources (DeFiLlama daily + HL sub-hourly)
+  const dailyMap = new Map();
+  for (const d of navHistory) {
+    const day = new Date(d.time).toISOString().slice(0, 10);
+    dailyMap.set(day, d); // last value per day
+  }
+  const dailyNavArr = [...dailyMap.values()].sort((a, b) => a.time - b.time);
+
+  // Compute daily returns from deduplicated daily NAV
   const dailyReturns = [];
-  for (let i = 1; i < navHistory.length; i++) {
-    const ret = (navHistory[i].value - navHistory[i - 1].value) / navHistory[i - 1].value;
+  for (let i = 1; i < dailyNavArr.length; i++) {
+    const ret = (dailyNavArr[i].value - dailyNavArr[i - 1].value) / dailyNavArr[i - 1].value;
     dailyReturns.push({
-      time: navHistory[i].time,
-      day: new Date(navHistory[i].time).toISOString().slice(0, 10),
+      time: dailyNavArr[i].time,
+      day: new Date(dailyNavArr[i].time).toISOString().slice(0, 10),
       value: ret
     });
   }
 
-  const dailyNavs = navHistory.map(d => ({
+  const dailyNavs = dailyNavArr.map(d => ({
     day: new Date(d.time).toISOString().slice(0, 10),
     value: d.value,
     time: d.time
