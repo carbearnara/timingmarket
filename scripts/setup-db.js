@@ -55,6 +55,10 @@ async function main() {
 
   console.log('Table and indexes ready.');
 
+  // ── 2b. Truncate existing data for a clean re-seed ────────────
+  console.log('Truncating existing snapshots for clean re-seed...');
+  await sql`TRUNCATE TABLE snapshots RESTART IDENTITY`;
+
   // ── 3. Fetch Hyperliquid vaultDetails (all timeframes) ────────
   console.log('\nFetching Hyperliquid vaultDetails...');
   const hlResp = await fetch(API_URL, {
@@ -71,7 +75,7 @@ async function main() {
   const hlData = await hlResp.json();
   const portfolioMap = Object.fromEntries(hlData.portfolio);
 
-  const summary = { allTime: 0, perpAllTime: 0, month: 0, week: 0, day: 0, defiLlama: 0 };
+  const summary = { allTime: 0, month: 0, week: 0, day: 0 };
 
   // ── Helper: insert a batch of points ──────────────────────────
   async function insertPoints(points, source) {
@@ -127,9 +131,12 @@ async function main() {
   }
 
   // ── 4a. Seed from allTime ─────────────────────────────────────
+  // NOTE: Only using HL timeframes that measure total account value.
+  // DeFiLlama TVL and perpAllTime measure different things (TVL ≠ account value,
+  // perpAllTime = perps-only subset) and cause ~36% zig-zag artifacts when mixed.
   const allTime = portfolioMap['allTime'];
   if (allTime) {
-    console.log('\n[Source 1/6] Hyperliquid allTime...');
+    console.log('\n[Source 1/4] Hyperliquid allTime...');
     const navHistory = allTime.accountValueHistory
       .map(([ts, val]) => ({ time: ts, value: parseFloat(val) }))
       .filter(d => d.value > 0);
@@ -143,45 +150,21 @@ async function main() {
     summary.allTime = await insertPoints(points, 'allTime');
   }
 
-  // ── 4b. Seed from DeFiLlama daily TVL ─────────────────────────
-  console.log('\n[Source 2/6] DeFiLlama daily TVL...');
-  try {
-    const llamaResp = await fetch('https://api.llama.fi/protocol/hyperliquid-hlp');
-    if (!llamaResp.ok) throw new Error(`DeFiLlama API error: ${llamaResp.status}`);
-    const llamaData = await llamaResp.json();
-    const tvl = llamaData.tvl || llamaData.chainTvls?.Hyperliquid?.tvl || [];
-
-    const llamaNav = tvl
-      .map(d => ({ time: d.date * 1000, value: d.totalLiquidityUSD }))
-      .filter(d => d.value > 0);
-
-    if (llamaNav.length > 0) {
-      // DeFiLlama has no PnL, so pass null map
-      const points = computeWithATH(llamaNav, null);
-      summary.defiLlama = await insertPoints(points, 'DeFiLlama');
-    } else {
-      console.log('  DeFiLlama: no TVL data found');
-    }
-  } catch (err) {
-    console.warn(`  DeFiLlama fetch failed: ${err.message}`);
-  }
-
-  // ── 4c-e. Seed from perpAllTime, month, week, day ─────────────
+  // ── 4b-d. Seed from month, week, day ──────────────────────────
   const hlTimeframes = [
-    { key: 'perpAllTime', label: 'perpAllTime', sourceNum: 3 },
-    { key: 'month', label: 'month', sourceNum: 4 },
-    { key: 'week', label: 'week', sourceNum: 5 },
-    { key: 'day', label: 'day', sourceNum: 6 },
+    { key: 'month', label: 'month', sourceNum: 2 },
+    { key: 'week', label: 'week', sourceNum: 3 },
+    { key: 'day', label: 'day', sourceNum: 4 },
   ];
 
   for (const { key, label, sourceNum } of hlTimeframes) {
     const tfData = portfolioMap[key];
     if (!tfData) {
-      console.log(`\n[Source ${sourceNum}/6] Hyperliquid ${label}: not available`);
+      console.log(`\n[Source ${sourceNum}/4] Hyperliquid ${label}: not available`);
       continue;
     }
 
-    console.log(`\n[Source ${sourceNum}/6] Hyperliquid ${label}...`);
+    console.log(`\n[Source ${sourceNum}/4] Hyperliquid ${label}...`);
     const navHistory = tfData.accountValueHistory
       .map(([ts, val]) => ({ time: ts, value: parseFloat(val) }))
       .filter(d => d.value > 0);
@@ -370,8 +353,6 @@ async function main() {
   console.log(`  Date range:          ${new Date(dateRange[0].first).toISOString().slice(0, 10)} → ${new Date(dateRange[0].last).toISOString().slice(0, 10)}`);
   console.log('  Inserted by source:');
   console.log(`    allTime:           ${summary.allTime}`);
-  console.log(`    DeFiLlama:         ${summary.defiLlama}`);
-  console.log(`    perpAllTime:       ${summary.perpAllTime}`);
   console.log(`    month:             ${summary.month}`);
   console.log(`    week:              ${summary.week}`);
   console.log(`    day:               ${summary.day}`);
