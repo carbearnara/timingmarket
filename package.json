@@ -1,0 +1,17 @@
+{
+  "name": "hlp-dashboard",
+  "version": "1.0.0",
+  "private": true,
+  "description": "HLP Deposit Timing Dashboard with hourly data collection",
+  "scripts": {
+    "setup-db": "node scripts/setup-db.js",
+    "dev": "npx vercel dev"
+  },
+  "type": "module",
+  "dependencies": {
+    "@neondatabase/serverless": "^0.10.4"
+  },
+  "devDependencies": {
+    "dotenv": "^16.4.7"
+  }
+}

@@ -1,0 +1,1621 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>HLP Deposit Timing Dashboard</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns@3.0.0/dist/chartjs-adapter-date-fns.bundle.min.js"></script>
+<style>
+  :root {
+    --bg: #0a0e17;
+    --card: #111827;
+    --border: #1e293b;
+    --text: #e2e8f0;
+    --muted: #64748b;
+    --green: #22c55e;
+    --red: #ef4444;
+    --yellow: #eab308;
+    --blue: #3b82f6;
+    --purple: #a855f7;
+    --cyan: #06b6d4;
+  }
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    font-family: 'SF Mono', 'Cascadia Code', 'Fira Code', 'JetBrains Mono', monospace;
+    background: var(--bg);
+    color: var(--text);
+    min-height: 100vh;
+    padding: 24px;
+  }
+
+  .header {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    margin-bottom: 24px;
+    flex-wrap: wrap;
+    gap: 16px;
+  }
+
+  .header h1 {
+    font-size: 20px;
+    font-weight: 700;
+    letter-spacing: -0.5px;
+  }
+
+  .header h1 span { color: var(--muted); font-weight: 400; }
+
+  .header-meta {
+    display: flex;
+    gap: 16px;
+    align-items: center;
+    font-size: 12px;
+    color: var(--muted);
+  }
+
+  .live-dot {
+    width: 8px; height: 8px;
+    border-radius: 50%;
+    display: inline-block;
+    animation: pulse 2s infinite;
+  }
+
+  .live-dot.green { background: var(--green); }
+  .live-dot.blue { background: var(--blue); }
+
+  @keyframes pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.4; }
+  }
+
+  .data-source {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 3px 10px;
+    border-radius: 12px;
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.5px;
+  }
+
+  .data-source.db {
+    background: rgba(59,130,246,0.15);
+    color: var(--blue);
+    border: 1px solid rgba(59,130,246,0.3);
+  }
+
+  .data-source.api {
+    background: rgba(234,179,8,0.15);
+    color: var(--yellow);
+    border: 1px solid rgba(234,179,8,0.3);
+  }
+
+  /* Time Range Selector */
+  .range-selector {
+    display: flex;
+    gap: 4px;
+    margin-bottom: 24px;
+    flex-wrap: wrap;
+  }
+
+  .range-btn {
+    background: var(--card);
+    border: 1px solid var(--border);
+    color: var(--muted);
+    padding: 6px 14px;
+    border-radius: 6px;
+    font-family: inherit;
+    font-size: 12px;
+    cursor: pointer;
+    transition: all 0.2s;
+  }
+
+  .range-btn:hover { border-color: var(--blue); color: var(--text); }
+  .range-btn.active {
+    background: rgba(59,130,246,0.15);
+    border-color: var(--blue);
+    color: var(--blue);
+  }
+
+  /* Composite Signal */
+  .composite-signal {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 28px 32px;
+    margin-bottom: 24px;
+    display: flex;
+    align-items: center;
+    gap: 32px;
+    flex-wrap: wrap;
+  }
+
+  .signal-gauge {
+    position: relative;
+    width: 140px;
+    height: 140px;
+    flex-shrink: 0;
+  }
+
+  .signal-gauge svg { transform: rotate(-90deg); }
+
+  .gauge-bg { stroke: var(--border); fill: none; stroke-width: 10; }
+  .gauge-fill { fill: none; stroke-width: 10; stroke-linecap: round; transition: stroke-dashoffset 1s ease, stroke 0.5s ease; }
+
+  .gauge-label {
+    position: absolute;
+    top: 50%; left: 50%;
+    transform: translate(-50%, -50%);
+    text-align: center;
+  }
+
+  .gauge-score { font-size: 36px; font-weight: 800; line-height: 1; }
+  .gauge-sublabel { font-size: 11px; color: var(--muted); margin-top: 4px; }
+
+  .signal-details { flex: 1; min-width: 280px; }
+  .signal-details h2 { font-size: 18px; margin-bottom: 4px; }
+  .signal-verdict { font-size: 14px; margin-bottom: 16px; line-height: 1.5; }
+  .signal-verdict strong { font-weight: 700; }
+
+  .signal-bars { display: flex; flex-direction: column; gap: 8px; }
+
+  .signal-bar-row {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    font-size: 12px;
+  }
+
+  .signal-bar-label {
+    width: 150px;
+    flex-shrink: 0;
+    color: var(--muted);
+    text-align: right;
+  }
+
+  .signal-bar-track {
+    flex: 1;
+    height: 6px;
+    background: var(--border);
+    border-radius: 3px;
+    overflow: hidden;
+    max-width: 200px;
+  }
+
+  .signal-bar-fill {
+    height: 100%;
+    border-radius: 3px;
+    transition: width 1s ease;
+  }
+
+  .signal-bar-value {
+    width: 32px;
+    text-align: right;
+    font-weight: 600;
+    flex-shrink: 0;
+  }
+
+  /* Key Metrics Row */
+  .metrics-row {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+    gap: 12px;
+    margin-bottom: 24px;
+  }
+
+  .metric-card {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 16px 20px;
+  }
+
+  .metric-label {
+    font-size: 11px;
+    color: var(--muted);
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    margin-bottom: 6px;
+  }
+
+  .metric-value {
+    font-size: 22px;
+    font-weight: 700;
+    line-height: 1.2;
+  }
+
+  .metric-sub {
+    font-size: 11px;
+    color: var(--muted);
+    margin-top: 4px;
+  }
+
+  .positive { color: var(--green); }
+  .negative { color: var(--red); }
+  .neutral { color: var(--yellow); }
+
+  /* Chart Grid */
+  .chart-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(480px, 1fr));
+    gap: 16px;
+    margin-bottom: 24px;
+  }
+
+  .chart-card {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 20px;
+  }
+
+  .chart-card h3 {
+    font-size: 13px;
+    font-weight: 600;
+    margin-bottom: 16px;
+    color: var(--muted);
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+  }
+
+  .chart-wrap {
+    position: relative;
+    height: 240px;
+  }
+
+  /* Signal Detail Cards */
+  .signal-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+    gap: 12px;
+    margin-bottom: 24px;
+  }
+
+  .signal-card {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 20px;
+  }
+
+  .signal-card-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 12px;
+  }
+
+  .signal-card-title {
+    font-size: 13px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    color: var(--muted);
+  }
+
+  .signal-card-score {
+    font-size: 20px;
+    font-weight: 800;
+  }
+
+  .signal-card p {
+    font-size: 13px;
+    line-height: 1.6;
+    color: var(--muted);
+  }
+
+  .signal-card .value-line {
+    font-size: 14px;
+    color: var(--text);
+    margin-bottom: 8px;
+    font-weight: 500;
+  }
+
+  /* Methodology */
+  .methodology {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 24px;
+    margin-bottom: 24px;
+  }
+
+  .methodology h3 {
+    font-size: 14px;
+    font-weight: 600;
+    margin-bottom: 12px;
+  }
+
+  .methodology p, .methodology li {
+    font-size: 13px;
+    line-height: 1.7;
+    color: var(--muted);
+  }
+
+  .methodology ul { padding-left: 20px; margin-top: 8px; }
+  .methodology li { margin-bottom: 4px; }
+
+  /* Loading */
+  .loading {
+    text-align: center;
+    padding: 80px 20px;
+    color: var(--muted);
+    font-size: 14px;
+  }
+
+  .loading .spinner {
+    width: 32px; height: 32px;
+    border: 3px solid var(--border);
+    border-top-color: var(--blue);
+    border-radius: 50%;
+    animation: spin 1s linear infinite;
+    margin: 0 auto 16px;
+  }
+
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  .error-msg {
+    background: rgba(239,68,68,0.1);
+    border: 1px solid rgba(239,68,68,0.3);
+    border-radius: 8px;
+    padding: 16px;
+    color: var(--red);
+    font-size: 13px;
+    margin-bottom: 16px;
+  }
+
+  @media (max-width: 600px) {
+    body { padding: 12px; }
+    .composite-signal { padding: 20px; gap: 20px; }
+    .chart-grid { grid-template-columns: 1fr; }
+    .signal-grid { grid-template-columns: 1fr; }
+    .signal-bar-label { width: 100px; }
+  }
+</style>
+</head>
+<body>
+
+<div class="header">
+  <div>
+    <h1>HLP Deposit Timing <span>/ Signal Dashboard</span></h1>
+  </div>
+  <div class="header-meta">
+    <span id="data-source" class="data-source api"><span class="live-dot green"></span> Direct API</span>
+    <span id="last-updated">Loading...</span>
+  </div>
+</div>
+
+<!-- Time Range Selector -->
+<div class="range-selector" id="range-selector" style="display:none;">
+  <button class="range-btn" data-range="7d">7D</button>
+  <button class="range-btn" data-range="30d">30D</button>
+  <button class="range-btn" data-range="90d">90D</button>
+  <button class="range-btn" data-range="1y">1Y</button>
+  <button class="range-btn active" data-range="all">All</button>
+</div>
+
+<div id="loading" class="loading">
+  <div class="spinner"></div>
+  Fetching HLP vault data...
+</div>
+
+<div id="dashboard" style="display:none;">
+
+  <!-- Composite Signal -->
+  <div class="composite-signal">
+    <div class="signal-gauge">
+      <svg width="140" height="140" viewBox="0 0 140 140">
+        <circle class="gauge-bg" cx="70" cy="70" r="60"/>
+        <circle class="gauge-fill" id="gauge-circle" cx="70" cy="70" r="60"
+          stroke-dasharray="377" stroke-dashoffset="377"/>
+      </svg>
+      <div class="gauge-label">
+        <div class="gauge-score" id="composite-score">--</div>
+        <div class="gauge-sublabel">/ 100</div>
+      </div>
+    </div>
+    <div class="signal-details">
+      <h2 id="verdict-title">Analyzing...</h2>
+      <div class="signal-verdict" id="verdict-text"></div>
+      <div class="signal-bars" id="signal-bars"></div>
+    </div>
+  </div>
+
+  <!-- Key Metrics -->
+  <div class="metrics-row" id="metrics-row"></div>
+
+  <!-- Charts -->
+  <div class="chart-grid">
+    <div class="chart-card">
+      <h3>NAV History &amp; Drawdown from ATH</h3>
+      <div class="chart-wrap"><canvas id="chart-nav"></canvas></div>
+    </div>
+    <div class="chart-card">
+      <h3>Daily Returns Distribution</h3>
+      <div class="chart-wrap"><canvas id="chart-returns"></canvas></div>
+    </div>
+    <div class="chart-card">
+      <h3>Cumulative PnL</h3>
+      <div class="chart-wrap"><canvas id="chart-pnl"></canvas></div>
+    </div>
+    <div class="chart-card">
+      <h3>Rolling 7-Day Return &amp; Volatility</h3>
+      <div class="chart-wrap"><canvas id="chart-rolling"></canvas></div>
+    </div>
+  </div>
+
+  <!-- Signal Detail Cards -->
+  <div class="signal-grid" id="signal-cards"></div>
+
+  <!-- Backtest Section -->
+  <div class="chart-card" style="margin-bottom:24px;">
+    <h3>Backtest: Forward Returns by Drawdown Level at Entry</h3>
+    <p style="font-size:12px;color:var(--muted);margin-bottom:16px;">
+      For each historical point, we measure the drawdown from ATH at that moment, then compute the forward return
+      over the next N periods. Grouped by drawdown bucket, this shows whether entering after larger drawdowns
+      has historically produced better risk-adjusted returns.
+    </p>
+    <div class="chart-wrap" style="height:300px;"><canvas id="chart-backtest"></canvas></div>
+  </div>
+
+  <div class="chart-grid" style="margin-bottom:24px;">
+    <div class="chart-card">
+      <h3>Backtest: Forward Sharpe by Drawdown Bucket</h3>
+      <div class="chart-wrap"><canvas id="chart-sharpe-buckets"></canvas></div>
+    </div>
+    <div class="chart-card">
+      <h3>Backtest: Forward Sharpe by NAV Momentum Bucket</h3>
+      <div class="chart-wrap"><canvas id="chart-sharpe-momentum"></canvas></div>
+    </div>
+  </div>
+
+  <!-- Backtest Results Table -->
+  <div class="methodology" style="margin-bottom:24px;">
+    <h3>Backtest Results: Entry Signal vs. Forward Performance</h3>
+    <div id="backtest-table" style="overflow-x:auto;margin-top:12px;"></div>
+    <p style="margin-top:12px;font-size:12px;color:var(--muted);" id="backtest-note">
+      Forward periods are measured in data points (~hours for DB data, ~days for API data).
+      Sharpe is annualized assuming ~365 periods/year for daily data. N = number of historical entry points in each bucket.
+    </p>
+  </div>
+
+  <!-- Methodology -->
+  <div class="methodology">
+    <h3>Signal Framework Methodology</h3>
+    <p>The composite score (0-100) aggregates five independent signals, each scored 0-100 where higher = more edge for a new deposit. The signals are weighted by predictive importance:</p>
+    <ul>
+      <li><strong>Drawdown from ATH (30%):</strong> Deeper drawdowns in a positive-EV strategy = cheaper entry. Scored exponentially: 0% DD=0, 2%=30, 5%=65, 9%+=95.</li>
+      <li><strong>TVL Momentum (25%):</strong> Falling TVL means fewer depositors competing for the same MM edge. Measured as % change over the trailing window. Negative TVL change = higher score.</li>
+      <li><strong>Return Momentum (20%):</strong> After a streak of negative days, mean reversion favors new entrants. Measured by the ratio of negative to positive days in the recent window.</li>
+      <li><strong>Volatility Regime (15%):</strong> High realized vol that is starting to decline = best entry. The vault's edge accrues in calmer regimes after drawdowns caused by vol spikes.</li>
+      <li><strong>APR Relative Value (10%):</strong> Current APR vs. historical median. Below-median APR after a drawdown suggests the headline yield hasn't yet recovered, meaning less competition from yield-chasing inflows.</li>
+    </ul>
+    <p style="margin-top:12px;"><strong>Interpretation:</strong> 0-25 = No Edge (wait). 25-50 = Low Edge (neutral). 50-70 = Moderate Edge (consider). 70-85 = Strong Edge (favorable). 85-100 = Max Edge (rare, post-crash).</p>
+    <p style="margin-top:8px;">Based on the Chaos Labs "Yield as a Risk Signal: Part II" framework. This is not financial advice. MM vaults are risk assets — size to drawdown.</p>
+  </div>
+</div>
+
+<script>
+const HLP_VAULT = '0xdfc24b077bc1425ad1dea75bcb6f8158e10df303';
+const API_URL = 'https://api.hyperliquid.xyz/info';
+
+let currentDataSource = 'api'; // 'db' or 'api'
+let currentRange = 'all';
+let chartInstances = {};
+let refreshInterval = null;
+
+// ── Data Source: Direct Hyperliquid API ─────────────────────
+async function fetchVaultDetails() {
+  const resp = await fetch(API_URL, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ type: 'vaultDetails', vaultAddress: HLP_VAULT })
+  });
+  if (!resp.ok) throw new Error(`API error: ${resp.status}`);
+  return resp.json();
+}
+
+// ── Data Source: DB API ─────────────────────────────────────
+async function fetchDBSnapshots(range) {
+  const resp = await fetch(`/api/snapshots?range=${range}`);
+  if (!resp.ok) throw new Error(`DB API error: ${resp.status}`);
+  return resp.json();
+}
+
+async function fetchDBLatest() {
+  const resp = await fetch('/api/latest');
+  if (!resp.ok) throw new Error(`DB Latest API error: ${resp.status}`);
+  return resp.json();
+}
+
+// ── Compute analytics from DB snapshots ─────────────────────
+function computeAnalyticsFromDB(snapshots, liveData) {
+  if (!snapshots || snapshots.length === 0) throw new Error('No DB snapshots');
+
+  // Build nav/pnl history from snapshots
+  const navHistory = snapshots.map(s => ({
+    time: new Date(s.collected_at).getTime(),
+    value: parseFloat(s.nav)
+  })).filter(d => d.value > 0);
+
+  const pnlHistory = snapshots.map(s => ({
+    time: new Date(s.collected_at).getTime(),
+    value: parseFloat(s.pnl)
+  }));
+
+  const currentNav = liveData ? liveData.nav : navHistory[navHistory.length - 1]?.value || 0;
+  const currentPnl = liveData ? liveData.pnl : pnlHistory[pnlHistory.length - 1]?.value || 0;
+
+  // ATH and drawdown history
+  let ath = 0;
+  const drawdownHistory = [];
+  for (const point of navHistory) {
+    if (point.value > ath) ath = point.value;
+    const dd = (point.value - ath) / ath;
+    drawdownHistory.push({ time: point.time, value: dd });
+  }
+  if (liveData && liveData.ath > ath) ath = liveData.ath;
+  const currentDrawdown = ath > 0 ? (currentNav - ath) / ath : 0;
+
+  let maxDD = 0;
+  for (const d of drawdownHistory) {
+    if (d.value < maxDD) maxDD = d.value;
+  }
+
+  // Period returns
+  const dailyReturns = [];
+  for (let i = 1; i < navHistory.length; i++) {
+    const ret = (navHistory[i].value - navHistory[i - 1].value) / navHistory[i - 1].value;
+    dailyReturns.push({
+      time: navHistory[i].time,
+      day: new Date(navHistory[i].time).toISOString().slice(0, 10),
+      value: ret
+    });
+  }
+
+  const dailyNavs = navHistory.map(d => ({
+    day: new Date(d.time).toISOString().slice(0, 10),
+    value: d.value,
+    time: d.time
+  }));
+
+  const recent30 = dailyReturns.slice(-30);
+  const recent7 = dailyReturns.slice(-7);
+
+  const threshold = 0.0002;
+  const positiveDays = recent30.filter(d => d.value > threshold).length;
+  const negativeDays = recent30.filter(d => d.value < -threshold).length;
+  const flatDays = recent30.length - positiveDays - negativeDays;
+  const hitRate = recent30.length > 0 ? positiveDays / recent30.length : 0;
+
+  const avgDailyReturn = recent30.length > 0
+    ? recent30.reduce((s, d) => s + d.value, 0) / recent30.length : 0;
+
+  const variance = recent30.length > 1
+    ? recent30.reduce((s, d) => s + Math.pow(d.value - avgDailyReturn, 2), 0) / (recent30.length - 1) : 0;
+  const dailyVol = Math.sqrt(variance);
+
+  const annualizedReturn = avgDailyReturn * 365;
+  const annualizedVol = dailyVol * Math.sqrt(365);
+  const sharpe = annualizedVol > 0 ? annualizedReturn / annualizedVol : 0;
+
+  // Rolling 7-period
+  const rollingWindow = 7;
+  const rolling7 = [];
+  for (let i = rollingWindow; i < dailyReturns.length; i++) {
+    const w = dailyReturns.slice(i - rollingWindow, i);
+    const mean = w.reduce((s, d) => s + d.value, 0) / w.length;
+    const vol = Math.sqrt(w.reduce((s, d) => s + Math.pow(d.value - mean, 2), 0) / Math.max(1, w.length - 1));
+    rolling7.push({
+      time: dailyReturns[i].time,
+      return7d: mean * rollingWindow,
+      vol7d: vol
+    });
+  }
+
+  // TVL change
+  const nav7dAgo = navHistory.length > 7 ? navHistory[Math.max(0, navHistory.length - 8)].value : currentNav;
+  const nav30dAgo = navHistory.length > 1 ? navHistory[0].value : currentNav;
+  const tvlChange7d = nav7dAgo > 0 ? (currentNav - nav7dAgo) / nav7dAgo : 0;
+  const tvlChange30d = nav30dAgo > 0 ? (currentNav - nav30dAgo) / nav30dAgo : 0;
+
+  // Vol trend
+  const last7Vol = rolling7.length > 0 ? rolling7[rolling7.length - 1].vol7d : 0;
+  const midIdx = Math.max(0, rolling7.length - Math.floor(rolling7.length / 2));
+  const prior7Vol = rolling7.length > 2 ? rolling7[midIdx].vol7d : last7Vol;
+  const volTrend = prior7Vol > 0 ? (last7Vol - prior7Vol) / prior7Vol : 0;
+
+  const currentApr = liveData ? liveData.apr : (snapshots[snapshots.length - 1]?.apr || 0);
+
+  return {
+    navHistory, pnlHistory, drawdownHistory, dailyReturns, rolling7, dailyNavs,
+    currentNav, currentPnl, ath, currentDrawdown, maxDD,
+    positiveDays, negativeDays, flatDays, hitRate,
+    avgDailyReturn, dailyVol, sharpe, annualizedReturn,
+    tvlChange7d, tvlChange30d,
+    last7Vol, prior7Vol, volTrend,
+    currentApr,
+    recent30, recent7,
+    maxDistributable: liveData ? liveData.maxDistributable : 0,
+    allowDeposits: liveData ? liveData.allowDeposits : true
+  };
+}
+
+// ── Compute Analytics (from direct API — original logic) ────
+function computeAnalytics(data) {
+  const portfolioMap = Object.fromEntries(data.portfolio);
+  const allTime = portfolioMap['allTime'];
+  const month = portfolioMap['month'];
+  const week = portfolioMap['week'];
+
+  if (!allTime) throw new Error('No allTime portfolio data');
+
+  const navHistory = allTime.accountValueHistory.map(([ts, val]) => ({
+    time: ts, value: parseFloat(val)
+  })).filter(d => d.value > 0);
+
+  const pnlHistory = allTime.pnlHistory.map(([ts, val]) => ({
+    time: ts, value: parseFloat(val)
+  })).filter(d => d.time > navHistory[0]?.time || 0);
+
+  const monthNav = month ? month.accountValueHistory.map(([ts, val]) => ({
+    time: ts, value: parseFloat(val)
+  })).filter(d => d.value > 0) : [];
+
+  const weekNav = week ? week.accountValueHistory.map(([ts, val]) => ({
+    time: ts, value: parseFloat(val)
+  })).filter(d => d.value > 0) : [];
+
+  const currentNav = navHistory[navHistory.length - 1]?.value || 0;
+  const currentPnl = pnlHistory[pnlHistory.length - 1]?.value || 0;
+
+  let ath = 0;
+  const drawdownHistory = [];
+  for (const point of navHistory) {
+    if (point.value > ath) ath = point.value;
+    const dd = (point.value - ath) / ath;
+    drawdownHistory.push({ time: point.time, value: dd });
+  }
+  const currentDrawdown = (currentNav - ath) / ath;
+
+  let maxDD = 0;
+  for (const d of drawdownHistory) {
+    if (d.value < maxDD) maxDD = d.value;
+  }
+
+  const periodReturns = [];
+  for (let i = 1; i < monthNav.length; i++) {
+    const ret = (monthNav[i].value - monthNav[i - 1].value) / monthNav[i - 1].value;
+    const dtHours = (monthNav[i].time - monthNav[i - 1].time) / (1000 * 60 * 60);
+    periodReturns.push({
+      time: monthNav[i].time,
+      day: new Date(monthNav[i].time).toISOString().slice(0, 10),
+      value: ret,
+      dtHours
+    });
+  }
+
+  const weekReturns = [];
+  for (let i = 1; i < weekNav.length; i++) {
+    const ret = (weekNav[i].value - weekNav[i - 1].value) / weekNav[i - 1].value;
+    weekReturns.push({ time: weekNav[i].time, value: ret });
+  }
+
+  const dailyReturns = periodReturns;
+  const dailyNavs = monthNav.map(d => ({ day: new Date(d.time).toISOString().slice(0, 10), value: d.value, time: d.time }));
+
+  const recent30 = dailyReturns.slice(-30);
+  const recent7 = dailyReturns.slice(-7);
+
+  const threshold = 0.0002;
+  const positiveDays = recent30.filter(d => d.value > threshold).length;
+  const negativeDays = recent30.filter(d => d.value < -threshold).length;
+  const flatDays = recent30.length - positiveDays - negativeDays;
+  const hitRate = recent30.length > 0 ? positiveDays / recent30.length : 0;
+
+  const avgDailyReturn = recent30.length > 0
+    ? recent30.reduce((s, d) => s + d.value, 0) / recent30.length : 0;
+
+  const variance = recent30.length > 1
+    ? recent30.reduce((s, d) => s + Math.pow(d.value - avgDailyReturn, 2), 0) / (recent30.length - 1) : 0;
+  const dailyVol = Math.sqrt(variance);
+
+  const annualizedReturn = avgDailyReturn * 365;
+  const annualizedVol = dailyVol * Math.sqrt(365);
+  const sharpe = annualizedVol > 0 ? annualizedReturn / annualizedVol : 0;
+
+  const rollingSource = weekReturns.length >= 14 ? weekReturns : dailyReturns;
+  const rollingWindow = weekReturns.length >= 14 ? 14 : 7;
+  const rolling7 = [];
+  for (let i = rollingWindow; i < rollingSource.length; i++) {
+    const w = rollingSource.slice(i - rollingWindow, i);
+    const mean = w.reduce((s, d) => s + d.value, 0) / w.length;
+    const vol = Math.sqrt(w.reduce((s, d) => s + Math.pow(d.value - mean, 2), 0) / Math.max(1, w.length - 1));
+    rolling7.push({
+      time: rollingSource[i].time,
+      return7d: mean * rollingWindow,
+      vol7d: vol
+    });
+  }
+
+  const nav7dAgo = monthNav.length > 7 ? monthNav[Math.max(0, monthNav.length - 8)].value : currentNav;
+  const nav30dAgo = monthNav.length > 1 ? monthNav[0].value : currentNav;
+  const tvlChange7d = nav7dAgo > 0 ? (currentNav - nav7dAgo) / nav7dAgo : 0;
+  const tvlChange30d = nav30dAgo > 0 ? (currentNav - nav30dAgo) / nav30dAgo : 0;
+
+  const last7Vol = rolling7.length > 0 ? rolling7[rolling7.length - 1].vol7d : 0;
+  const midIdx = Math.max(0, rolling7.length - Math.floor(rolling7.length / 2));
+  const prior7Vol = rolling7.length > 2 ? rolling7[midIdx].vol7d : last7Vol;
+  const volTrend = prior7Vol > 0 ? (last7Vol - prior7Vol) / prior7Vol : 0;
+
+  const currentApr = data.apr || 0;
+
+  return {
+    navHistory, pnlHistory, drawdownHistory, dailyReturns, rolling7, dailyNavs,
+    currentNav, currentPnl, ath, currentDrawdown, maxDD,
+    positiveDays, negativeDays, flatDays, hitRate,
+    avgDailyReturn, dailyVol, sharpe, annualizedReturn,
+    tvlChange7d, tvlChange30d,
+    last7Vol, prior7Vol, volTrend,
+    currentApr,
+    recent30, recent7,
+    maxDistributable: data.maxDistributable || 0,
+    allowDeposits: data.allowDeposits
+  };
+}
+
+// ── Signal Scoring ──────────────────────────────────────────
+function computeSignals(a) {
+  const signals = {};
+
+  const ddPct = Math.abs(a.currentDrawdown) * 100;
+  let ddScore;
+  if (ddPct < 0.1) ddScore = 5;
+  else if (ddPct < 0.5) ddScore = 15;
+  else if (ddPct < 1) ddScore = 25;
+  else if (ddPct < 2) ddScore = 40;
+  else if (ddPct < 3) ddScore = 55;
+  else if (ddPct < 5) ddScore = 70;
+  else if (ddPct < 7) ddScore = 85;
+  else if (ddPct < 9) ddScore = 92;
+  else ddScore = 98;
+
+  signals.drawdown = {
+    score: ddScore, weight: 0.30,
+    label: 'Drawdown from ATH',
+    detail: `${(a.currentDrawdown * 100).toFixed(2)}% from ATH ($${formatNum(a.ath)})`,
+    explanation: ddPct < 1
+      ? 'NAV is near ATH. No drawdown discount — you are entering at peak pricing.'
+      : ddPct < 3
+      ? 'Modest drawdown. Some discount to ATH but not a distressed entry.'
+      : ddPct < 6
+      ? 'Meaningful drawdown. Historically this level has offered good entries as the house edge grinds back.'
+      : 'Large drawdown. If caused by market vol (not structural exploit), this is historically high-edge entry territory.'
+  };
+
+  const tvl7 = a.tvlChange7d * 100;
+  let tvlScore;
+  if (tvl7 > 3) tvlScore = 10;
+  else if (tvl7 > 1) tvlScore = 25;
+  else if (tvl7 > 0) tvlScore = 40;
+  else if (tvl7 > -1) tvlScore = 55;
+  else if (tvl7 > -3) tvlScore = 70;
+  else if (tvl7 > -5) tvlScore = 85;
+  else tvlScore = 95;
+
+  signals.tvl = {
+    score: tvlScore, weight: 0.25,
+    label: 'TVL Momentum',
+    detail: `7d: ${tvl7 >= 0 ? '+' : ''}${tvl7.toFixed(2)}% | 30d: ${(a.tvlChange30d * 100) >= 0 ? '+' : ''}${(a.tvlChange30d * 100).toFixed(2)}%`,
+    explanation: tvl7 > 1
+      ? 'TVL is growing — more capital competing for the same edge. Per-dollar returns compress.'
+      : tvl7 > -1
+      ? 'TVL roughly stable. Neutral signal.'
+      : 'TVL declining — depositors leaving means higher edge per remaining dollar. Favorable for new entrants.'
+  };
+
+  const negRatio = a.recent30.length > 0 ? a.negativeDays / a.recent30.length : 0;
+  const recent7Avg = a.recent7.length > 0
+    ? a.recent7.reduce((s, d) => s + d.value, 0) / a.recent7.length : 0;
+  let retScore;
+  if (recent7Avg > 0.003) retScore = 10;
+  else if (recent7Avg > 0.001) retScore = 25;
+  else if (recent7Avg > 0) retScore = 40;
+  else if (recent7Avg > -0.001) retScore = 55;
+  else if (recent7Avg > -0.003) retScore = 70;
+  else if (recent7Avg > -0.01) retScore = 85;
+  else retScore = 95;
+
+  signals.momentum = {
+    score: retScore, weight: 0.20,
+    label: 'Return Momentum',
+    detail: `7d avg daily: ${(recent7Avg * 100).toFixed(3)}% | 30d hit rate: ${(a.hitRate * 100).toFixed(0)}% (${a.positiveDays}+/${a.negativeDays}-)`,
+    explanation: recent7Avg > 0.001
+      ? 'Recent returns are strong. Entering after a positive streak means less drawdown buffer.'
+      : recent7Avg > -0.001
+      ? 'Mixed/flat recent returns. Neutral entry conditions.'
+      : 'Recent returns are negative. Mean-reversion dynamics favor recovery from here, good entry timing.'
+  };
+
+  const vol7dAnnualized = a.last7Vol * Math.sqrt(365) * 100;
+  let volScore;
+  if (a.volTrend < -0.3 && vol7dAnnualized > 10) volScore = 90;
+  else if (a.volTrend < -0.1) volScore = 70;
+  else if (Math.abs(a.volTrend) < 0.1) volScore = 50;
+  else if (a.volTrend < 0.3) volScore = 35;
+  else volScore = 15;
+
+  signals.volatility = {
+    score: volScore, weight: 0.15,
+    label: 'Volatility Regime',
+    detail: `7d ann. vol: ${vol7dAnnualized.toFixed(1)}% | Trend: ${a.volTrend > 0 ? '+' : ''}${(a.volTrend * 100).toFixed(0)}%`,
+    explanation: a.volTrend < -0.1
+      ? 'Volatility is declining from elevated levels. The vault\'s MM edge accrues best as vol normalizes post-shock.'
+      : Math.abs(a.volTrend) < 0.1
+      ? 'Volatility is stable. Neutral for entry timing.'
+      : 'Volatility is rising. Drawdowns may deepen before recovery. Consider waiting for vol to peak.'
+  };
+
+  const aprPct = a.currentApr * 100;
+  let aprScore;
+  if (aprPct > 40) aprScore = 15;
+  else if (aprPct > 25) aprScore = 30;
+  else if (aprPct > 15) aprScore = 50;
+  else if (aprPct > 8) aprScore = 65;
+  else if (aprPct > 3) aprScore = 75;
+  else aprScore = 90;
+
+  signals.apr = {
+    score: aprScore, weight: 0.10,
+    label: 'APR Relative Value',
+    detail: `Current APR: ${aprPct.toFixed(1)}%`,
+    explanation: aprPct > 25
+      ? 'High headline APR attracts deposits, compressing future edge. May be entering a crowding phase.'
+      : aprPct > 10
+      ? 'Moderate APR. Balanced between attraction and available edge.'
+      : 'Low APR — fewer yield-chasers entering. Contrarian entry: APR tends to mean-revert upward after drawdowns.'
+  };
+
+  let composite = 0;
+  for (const s of Object.values(signals)) {
+    composite += s.score * s.weight;
+  }
+  composite = Math.round(composite);
+
+  return { signals, composite };
+}
+
+// ── Rendering ───────────────────────────────────────────────
+function getScoreColor(score) {
+  if (score >= 70) return 'var(--green)';
+  if (score >= 50) return 'var(--yellow)';
+  if (score >= 30) return 'var(--muted)';
+  return 'var(--red)';
+}
+
+function getScoreClass(score) {
+  if (score >= 70) return 'positive';
+  if (score >= 50) return 'neutral';
+  return 'negative';
+}
+
+function getVerdict(score) {
+  if (score >= 85) return { title: 'MAX EDGE — Rare Post-Crash Entry', text: 'Multiple signals align for a high-conviction entry. Deep drawdown + falling TVL + negative momentum suggest maximum edge for new deposits. <strong>Size to drawdown tolerance, not to conviction.</strong>' };
+  if (score >= 70) return { title: 'STRONG EDGE — Favorable Entry', text: 'Conditions favor new deposits. The vault is below ATH with supportive dynamics. <strong>Good time to deploy risk capital if you have a multi-month horizon.</strong>' };
+  if (score >= 50) return { title: 'MODERATE EDGE — Consider Entry', text: 'Mixed signals. Some indicators favor entry but others are neutral or negative. <strong>Reasonable to start building a position, but not a screaming buy.</strong>' };
+  if (score >= 30) return { title: 'LOW EDGE — Neutral', text: 'Few signals support a new deposit right now. The vault may be near ATH with growing TVL, compressing edge. <strong>No rush to enter. Wait for a drawdown.</strong>' };
+  return { title: 'NO EDGE — Wait', text: 'Conditions are unfavorable. NAV is at or near ATH, TVL is growing, and yield chasers are crowding in. <strong>New deposits face compressed returns and elevated risk of being the exit liquidity.</strong>' };
+}
+
+function formatNum(n) {
+  if (Math.abs(n) >= 1e9) return (n / 1e9).toFixed(2) + 'B';
+  if (Math.abs(n) >= 1e6) return (n / 1e6).toFixed(2) + 'M';
+  if (Math.abs(n) >= 1e3) return (n / 1e3).toFixed(1) + 'K';
+  return n.toFixed(2);
+}
+
+function updateDataSourceIndicator(source) {
+  const el = document.getElementById('data-source');
+  if (source === 'db') {
+    el.className = 'data-source db';
+    el.innerHTML = '<span class="live-dot blue"></span> DB';
+    document.getElementById('range-selector').style.display = 'flex';
+  } else {
+    el.className = 'data-source api';
+    el.innerHTML = '<span class="live-dot green"></span> Direct API';
+    document.getElementById('range-selector').style.display = 'none';
+  }
+}
+
+function renderDashboard(data, analytics, signalResult) {
+  const { signals, composite } = signalResult;
+
+  document.getElementById('loading').style.display = 'none';
+  document.getElementById('dashboard').style.display = 'block';
+  document.getElementById('last-updated').textContent = `Updated: ${new Date().toLocaleString()}`;
+
+  // Composite gauge
+  const gaugeCircle = document.getElementById('gauge-circle');
+  const circumference = 2 * Math.PI * 60;
+  const offset = circumference - (composite / 100) * circumference;
+  gaugeCircle.style.strokeDashoffset = offset;
+  gaugeCircle.style.stroke = getScoreColor(composite);
+
+  const scoreEl = document.getElementById('composite-score');
+  scoreEl.textContent = composite;
+  scoreEl.style.color = getScoreColor(composite);
+
+  const verdict = getVerdict(composite);
+  document.getElementById('verdict-title').textContent = verdict.title;
+  document.getElementById('verdict-text').innerHTML = verdict.text;
+
+  // Signal bars
+  const barsContainer = document.getElementById('signal-bars');
+  barsContainer.innerHTML = '';
+  for (const [key, sig] of Object.entries(signals)) {
+    const row = document.createElement('div');
+    row.className = 'signal-bar-row';
+    row.innerHTML = `
+      <span class="signal-bar-label">${sig.label} (${(sig.weight * 100).toFixed(0)}%)</span>
+      <div class="signal-bar-track">
+        <div class="signal-bar-fill" style="width:${sig.score}%;background:${getScoreColor(sig.score)}"></div>
+      </div>
+      <span class="signal-bar-value" style="color:${getScoreColor(sig.score)}">${sig.score}</span>
+    `;
+    barsContainer.appendChild(row);
+  }
+
+  // Metrics row
+  const metricsRow = document.getElementById('metrics-row');
+  const metrics = [
+    { label: 'Current NAV', value: `$${formatNum(analytics.currentNav)}`, sub: `ATH: $${formatNum(analytics.ath)}` },
+    { label: 'Drawdown', value: `${(analytics.currentDrawdown * 100).toFixed(2)}%`, sub: `Max DD: ${(analytics.maxDD * 100).toFixed(2)}%`, cls: analytics.currentDrawdown < -0.01 ? 'negative' : 'positive' },
+    { label: 'APR', value: `${(analytics.currentApr * 100).toFixed(1)}%`, sub: `Sharpe: ${analytics.sharpe.toFixed(2)}` },
+    { label: 'Avg Daily Return', value: `${(analytics.avgDailyReturn * 100).toFixed(3)}%`, sub: `Ann: ${(analytics.annualizedReturn * 100).toFixed(1)}%`, cls: analytics.avgDailyReturn > 0 ? 'positive' : 'negative' },
+    { label: '30d Hit Rate', value: `${(analytics.hitRate * 100).toFixed(0)}%`, sub: `${analytics.positiveDays}+ / ${analytics.negativeDays}- / ${analytics.flatDays} flat`, cls: analytics.hitRate > 0.6 ? 'positive' : 'negative' },
+    { label: 'Daily Volatility', value: `${(analytics.dailyVol * 100).toFixed(3)}%`, sub: `Ann: ${(analytics.dailyVol * Math.sqrt(365) * 100).toFixed(1)}%` },
+    { label: 'All-Time PnL', value: `$${formatNum(analytics.currentPnl)}`, sub: '', cls: analytics.currentPnl > 0 ? 'positive' : 'negative' },
+    { label: 'Deposits', value: analytics.allowDeposits ? 'OPEN' : 'CLOSED', sub: `TVL: $${formatNum(analytics.maxDistributable)}`, cls: analytics.allowDeposits ? 'positive' : 'negative' },
+  ];
+
+  metricsRow.innerHTML = metrics.map(m => `
+    <div class="metric-card">
+      <div class="metric-label">${m.label}</div>
+      <div class="metric-value ${m.cls || ''}">${m.value}</div>
+      <div class="metric-sub">${m.sub}</div>
+    </div>
+  `).join('');
+
+  // Signal detail cards
+  const signalCards = document.getElementById('signal-cards');
+  signalCards.innerHTML = '';
+  for (const [key, sig] of Object.entries(signals)) {
+    const card = document.createElement('div');
+    card.className = 'signal-card';
+    card.innerHTML = `
+      <div class="signal-card-header">
+        <span class="signal-card-title">${sig.label}</span>
+        <span class="signal-card-score" style="color:${getScoreColor(sig.score)}">${sig.score}</span>
+      </div>
+      <div class="value-line">${sig.detail}</div>
+      <p>${sig.explanation}</p>
+    `;
+    signalCards.appendChild(card);
+  }
+
+  // Charts
+  renderCharts(analytics);
+}
+
+// ── Charts ──────────────────────────────────────────────────
+const chartDefaults = {
+  responsive: true,
+  maintainAspectRatio: false,
+  animation: { duration: 800 },
+  plugins: {
+    legend: { display: false },
+    tooltip: {
+      backgroundColor: '#1e293b',
+      titleColor: '#e2e8f0',
+      bodyColor: '#94a3b8',
+      borderColor: '#334155',
+      borderWidth: 1,
+      cornerRadius: 6,
+      padding: 10,
+      titleFont: { family: 'inherit', size: 12 },
+      bodyFont: { family: 'inherit', size: 11 },
+    }
+  },
+  scales: {
+    x: {
+      type: 'time',
+      grid: { color: 'rgba(30,41,59,0.5)', drawBorder: false },
+      ticks: { color: '#64748b', font: { size: 10, family: 'inherit' }, maxTicksLimit: 8 }
+    },
+    y: {
+      grid: { color: 'rgba(30,41,59,0.5)', drawBorder: false },
+      ticks: { color: '#64748b', font: { size: 10, family: 'inherit' } }
+    }
+  }
+};
+
+function destroyCharts() {
+  for (const key of Object.keys(chartInstances)) {
+    if (chartInstances[key]) {
+      chartInstances[key].destroy();
+      delete chartInstances[key];
+    }
+  }
+}
+
+function renderCharts(a) {
+  destroyCharts();
+
+  const sampleRate = Math.max(1, Math.floor(a.navHistory.length / 500));
+  const sampledNav = a.navHistory.filter((_, i) => i % sampleRate === 0 || i === a.navHistory.length - 1);
+  const sampledDD = a.drawdownHistory.filter((_, i) => i % sampleRate === 0 || i === a.drawdownHistory.length - 1);
+
+  // 1. NAV + Drawdown Chart
+  chartInstances.nav = new Chart(document.getElementById('chart-nav'), {
+    type: 'line',
+    data: {
+      datasets: [
+        {
+          label: 'NAV',
+          data: sampledNav.map(d => ({ x: d.time, y: d.value })),
+          borderColor: '#3b82f6',
+          backgroundColor: 'rgba(59,130,246,0.1)',
+          fill: true,
+          borderWidth: 1.5,
+          pointRadius: 0,
+          tension: 0.1,
+          yAxisID: 'y'
+        },
+        {
+          label: 'Drawdown %',
+          data: sampledDD.map(d => ({ x: d.time, y: d.value * 100 })),
+          borderColor: '#ef4444',
+          backgroundColor: 'rgba(239,68,68,0.08)',
+          fill: true,
+          borderWidth: 1.5,
+          pointRadius: 0,
+          tension: 0.1,
+          yAxisID: 'y1'
+        }
+      ]
+    },
+    options: {
+      ...chartDefaults,
+      plugins: {
+        ...chartDefaults.plugins,
+        legend: { display: true, labels: { color: '#64748b', font: { size: 10, family: 'inherit' }, boxWidth: 12, padding: 16 } }
+      },
+      scales: {
+        ...chartDefaults.scales,
+        y: {
+          ...chartDefaults.scales.y,
+          position: 'left',
+          ticks: {
+            ...chartDefaults.scales.y.ticks,
+            callback: v => '$' + formatNum(v)
+          }
+        },
+        y1: {
+          position: 'right',
+          grid: { display: false },
+          ticks: { color: '#ef4444', font: { size: 10, family: 'inherit' }, callback: v => v.toFixed(1) + '%' },
+          max: 0,
+        }
+      }
+    }
+  });
+
+  // 2. Daily Returns Distribution
+  const allReturns = a.dailyReturns;
+  const bins = {};
+  const retValues = allReturns.map(d => d.value * 100);
+  const retRange = retValues.length > 0 ? Math.max(...retValues) - Math.min(...retValues) : 1;
+  const binSize = Math.max(0.1, Math.round(retRange / 15 * 10) / 10);
+  for (const d of allReturns) {
+    const bin = Math.round((d.value * 100) / binSize) * binSize;
+    const key = bin.toFixed(1);
+    bins[key] = (bins[key] || 0) + 1;
+  }
+  const sortedKeys = Object.keys(bins).sort((a, b) => parseFloat(a) - parseFloat(b));
+
+  chartInstances.returns = new Chart(document.getElementById('chart-returns'), {
+    type: 'bar',
+    data: {
+      labels: sortedKeys.map(k => k + '%'),
+      datasets: [{
+        label: 'Days',
+        data: sortedKeys.map(k => bins[k]),
+        backgroundColor: sortedKeys.map(k => parseFloat(k) >= 0 ? 'rgba(34,197,94,0.6)' : 'rgba(239,68,68,0.6)'),
+        borderColor: sortedKeys.map(k => parseFloat(k) >= 0 ? '#22c55e' : '#ef4444'),
+        borderWidth: 1,
+        borderRadius: 2,
+      }]
+    },
+    options: {
+      ...chartDefaults,
+      scales: {
+        x: {
+          grid: { display: false },
+          ticks: { color: '#64748b', font: { size: 9, family: 'inherit' }, maxRotation: 45 }
+        },
+        y: {
+          ...chartDefaults.scales.y,
+          ticks: { ...chartDefaults.scales.y.ticks, stepSize: 1 },
+          title: { display: true, text: 'Periods', color: '#475569', font: { size: 10, family: 'inherit' } }
+        }
+      }
+    }
+  });
+
+  // 3. Cumulative PnL
+  const sampledPnl = a.pnlHistory.filter((_, i) => i % sampleRate === 0 || i === a.pnlHistory.length - 1);
+
+  chartInstances.pnl = new Chart(document.getElementById('chart-pnl'), {
+    type: 'line',
+    data: {
+      datasets: [{
+        label: 'Cumulative PnL',
+        data: sampledPnl.map(d => ({ x: d.time, y: d.value })),
+        borderColor: '#22c55e',
+        backgroundColor: 'rgba(34,197,94,0.1)',
+        fill: true,
+        borderWidth: 1.5,
+        pointRadius: 0,
+        tension: 0.1,
+      }]
+    },
+    options: {
+      ...chartDefaults,
+      scales: {
+        ...chartDefaults.scales,
+        y: {
+          ...chartDefaults.scales.y,
+          ticks: { ...chartDefaults.scales.y.ticks, callback: v => '$' + formatNum(v) }
+        }
+      }
+    }
+  });
+
+  // 4. Rolling return and vol
+  const sampledRolling = a.rolling7.length > 300
+    ? a.rolling7.filter((_, i) => i % Math.max(1, Math.floor(a.rolling7.length / 300)) === 0)
+    : a.rolling7;
+
+  chartInstances.rolling = new Chart(document.getElementById('chart-rolling'), {
+    type: 'line',
+    data: {
+      datasets: [
+        {
+          label: '7d Return',
+          data: sampledRolling.map(d => ({ x: d.time, y: d.return7d * 100 })),
+          borderColor: '#3b82f6',
+          borderWidth: 1.5,
+          pointRadius: 0,
+          tension: 0.2,
+          yAxisID: 'y'
+        },
+        {
+          label: '7d Vol',
+          data: sampledRolling.map(d => ({ x: d.time, y: d.vol7d * 100 })),
+          borderColor: '#a855f7',
+          backgroundColor: 'rgba(168,85,247,0.08)',
+          fill: true,
+          borderWidth: 1.5,
+          pointRadius: 0,
+          tension: 0.2,
+          yAxisID: 'y1'
+        }
+      ]
+    },
+    options: {
+      ...chartDefaults,
+      plugins: {
+        ...chartDefaults.plugins,
+        legend: { display: true, labels: { color: '#64748b', font: { size: 10, family: 'inherit' }, boxWidth: 12, padding: 16 } }
+      },
+      scales: {
+        ...chartDefaults.scales,
+        y: {
+          ...chartDefaults.scales.y,
+          position: 'left',
+          ticks: { ...chartDefaults.scales.y.ticks, callback: v => v.toFixed(2) + '%' }
+        },
+        y1: {
+          position: 'right',
+          grid: { display: false },
+          ticks: { color: '#a855f7', font: { size: 10, family: 'inherit' }, callback: v => v.toFixed(2) + '%' }
+        }
+      }
+    }
+  });
+}
+
+// ── Backtest Engine ─────────────────────────────────────────
+function runBacktest(analytics) {
+  const nav = analytics.navHistory;
+  if (nav.length < 10) return null;
+
+  let ath = 0;
+  const points = nav.map(d => {
+    if (d.value > ath) ath = d.value;
+    return { ...d, drawdown: (d.value - ath) / ath, ath };
+  });
+
+  const returns = [];
+  for (let i = 1; i < points.length; i++) {
+    returns.push({
+      ...points[i],
+      periodReturn: (points[i].value - points[i - 1].value) / points[i - 1].value,
+      dtMs: points[i].time - points[i - 1].time
+    });
+  }
+
+  for (let i = 0; i < returns.length; i++) {
+    if (i >= 3) {
+      const startVal = points[i - 2].value;
+      returns[i].momentum3 = (returns[i].value - startVal) / startVal;
+    } else {
+      returns[i].momentum3 = 0;
+    }
+  }
+
+  const forwardPeriods = [3, 5, 10, 20];
+  const backtestResults = [];
+
+  for (let i = 0; i < returns.length; i++) {
+    const entry = returns[i];
+    const fwd = {};
+    let valid = true;
+
+    for (const h of forwardPeriods) {
+      const exitIdx = i + h;
+      if (exitIdx < points.length) {
+        fwd[h] = (points[exitIdx].value - entry.value) / entry.value;
+      } else {
+        valid = false;
+        break;
+      }
+    }
+
+    if (valid) {
+      backtestResults.push({
+        time: entry.time,
+        drawdown: entry.drawdown,
+        momentum3: entry.momentum3,
+        forward: fwd
+      });
+    }
+  }
+
+  const ddBuckets = [
+    { label: '0-0.5%', min: -0.005, max: 0 },
+    { label: '0.5-2%', min: -0.02, max: -0.005 },
+    { label: '2-5%', min: -0.05, max: -0.02 },
+    { label: '5-10%', min: -0.10, max: -0.05 },
+    { label: '10%+', min: -1, max: -0.10 },
+  ];
+
+  const ddBucketResults = ddBuckets.map(bucket => {
+    const entries = backtestResults.filter(r => r.drawdown >= bucket.min && r.drawdown < bucket.max);
+    const stats = {};
+    for (const h of forwardPeriods) {
+      const fwdReturns = entries.map(e => e.forward[h]).filter(v => v !== undefined);
+      if (fwdReturns.length > 0) {
+        const mean = fwdReturns.reduce((s, v) => s + v, 0) / fwdReturns.length;
+        const variance = fwdReturns.length > 1
+          ? fwdReturns.reduce((s, v) => s + Math.pow(v - mean, 2), 0) / (fwdReturns.length - 1) : 0;
+        const std = Math.sqrt(variance);
+        const sharpe = std > 0 ? (mean / std) * Math.sqrt(365 / Math.max(1, h)) : 0;
+        stats[h] = { mean, std, sharpe, n: fwdReturns.length, median: sortedMedian(fwdReturns) };
+      }
+    }
+    return { ...bucket, entries: entries.length, stats };
+  });
+
+  const momBuckets = [
+    { label: 'Strong Up (>3%)', min: 0.03, max: 1 },
+    { label: 'Up (1-3%)', min: 0.01, max: 0.03 },
+    { label: 'Flat (-1% to 1%)', min: -0.01, max: 0.01 },
+    { label: 'Down (-3 to -1%)', min: -0.03, max: -0.01 },
+    { label: 'Strong Down (<-3%)', min: -1, max: -0.03 },
+  ];
+
+  const momBucketResults = momBuckets.map(bucket => {
+    const entries = backtestResults.filter(r => r.momentum3 >= bucket.min && r.momentum3 < bucket.max);
+    const stats = {};
+    for (const h of forwardPeriods) {
+      const fwdReturns = entries.map(e => e.forward[h]).filter(v => v !== undefined);
+      if (fwdReturns.length > 0) {
+        const mean = fwdReturns.reduce((s, v) => s + v, 0) / fwdReturns.length;
+        const variance = fwdReturns.length > 1
+          ? fwdReturns.reduce((s, v) => s + Math.pow(v - mean, 2), 0) / (fwdReturns.length - 1) : 0;
+        const std = Math.sqrt(variance);
+        const sharpe = std > 0 ? (mean / std) * Math.sqrt(365 / Math.max(1, h)) : 0;
+        stats[h] = { mean, std, sharpe, n: fwdReturns.length, median: sortedMedian(fwdReturns) };
+      }
+    }
+    return { ...bucket, entries: entries.length, stats };
+  });
+
+  return { ddBucketResults, momBucketResults, forwardPeriods, totalPoints: backtestResults.length };
+}
+
+function sortedMedian(arr) {
+  const sorted = [...arr].sort((a, b) => a - b);
+  const mid = Math.floor(sorted.length / 2);
+  return sorted.length % 2 === 0 ? (sorted[mid - 1] + sorted[mid]) / 2 : sorted[mid];
+}
+
+function renderBacktest(backtest) {
+  if (!backtest || backtest.totalPoints < 5) {
+    document.getElementById('backtest-table').innerHTML = '<p style="color:var(--muted)">Insufficient historical data for backtest (need more data points).</p>';
+    return;
+  }
+
+  const { ddBucketResults, momBucketResults, forwardPeriods } = backtest;
+
+  const tableHtml = `
+    <table style="width:100%;border-collapse:collapse;font-size:12px;">
+      <thead>
+        <tr style="border-bottom:1px solid var(--border);">
+          <th style="text-align:left;padding:8px;color:var(--muted);">Entry Condition</th>
+          <th style="text-align:center;padding:8px;color:var(--muted);">N</th>
+          ${forwardPeriods.map(h => `
+            <th style="text-align:center;padding:8px;color:var(--muted);">Fwd ${h}p Return</th>
+            <th style="text-align:center;padding:8px;color:var(--muted);">Fwd ${h}p Sharpe</th>
+          `).join('')}
+        </tr>
+      </thead>
+      <tbody>
+        <tr><td colspan="${2 + forwardPeriods.length * 2}" style="padding:12px 8px 4px;color:var(--text);font-weight:600;">By Drawdown at Entry</td></tr>
+        ${ddBucketResults.map(b => `
+          <tr style="border-bottom:1px solid rgba(30,41,59,0.3);">
+            <td style="padding:6px 8px;">${b.label} DD</td>
+            <td style="text-align:center;padding:6px 8px;color:var(--muted);">${b.entries}</td>
+            ${forwardPeriods.map(h => {
+              const s = b.stats[h];
+              if (!s) return '<td style="text-align:center;padding:6px 8px;color:var(--muted);">-</td><td style="text-align:center;padding:6px 8px;color:var(--muted);">-</td>';
+              const retClass = s.mean > 0 ? 'positive' : s.mean < 0 ? 'negative' : '';
+              const sharpeClass = s.sharpe > 1 ? 'positive' : s.sharpe < 0 ? 'negative' : 'neutral';
+              return `
+                <td style="text-align:center;padding:6px 8px;" class="${retClass}">${(s.mean * 100).toFixed(2)}%</td>
+                <td style="text-align:center;padding:6px 8px;" class="${sharpeClass}">${s.sharpe.toFixed(2)}</td>
+              `;
+            }).join('')}
+          </tr>
+        `).join('')}
+        <tr><td colspan="${2 + forwardPeriods.length * 2}" style="padding:16px 8px 4px;color:var(--text);font-weight:600;">By Trailing 3-Period Momentum at Entry</td></tr>
+        ${momBucketResults.map(b => `
+          <tr style="border-bottom:1px solid rgba(30,41,59,0.3);">
+            <td style="padding:6px 8px;">${b.label}</td>
+            <td style="text-align:center;padding:6px 8px;color:var(--muted);">${b.entries}</td>
+            ${forwardPeriods.map(h => {
+              const s = b.stats[h];
+              if (!s) return '<td style="text-align:center;padding:6px 8px;color:var(--muted);">-</td><td style="text-align:center;padding:6px 8px;color:var(--muted);">-</td>';
+              const retClass = s.mean > 0 ? 'positive' : s.mean < 0 ? 'negative' : '';
+              const sharpeClass = s.sharpe > 1 ? 'positive' : s.sharpe < 0 ? 'negative' : 'neutral';
+              return `
+                <td style="text-align:center;padding:6px 8px;" class="${retClass}">${(s.mean * 100).toFixed(2)}%</td>
+                <td style="text-align:center;padding:6px 8px;" class="${sharpeClass}">${s.sharpe.toFixed(2)}</td>
+              `;
+            }).join('')}
+          </tr>
+        `).join('')}
+      </tbody>
+    </table>
+  `;
+  document.getElementById('backtest-table').innerHTML = tableHtml;
+
+  // Forward Return by Drawdown Bar Chart
+  const ddLabels = ddBucketResults.map(b => b.label);
+  const horizon = forwardPeriods[forwardPeriods.length > 2 ? 2 : forwardPeriods.length - 1];
+  const fwdReturnsByDD = ddBucketResults.map(b => b.stats[horizon]?.mean * 100 || 0);
+  const fwdSharpeByDD = ddBucketResults.map(b => b.stats[horizon]?.sharpe || 0);
+
+  chartInstances.backtest = new Chart(document.getElementById('chart-backtest'), {
+    type: 'bar',
+    data: {
+      labels: ddLabels.map(l => l + ' DD'),
+      datasets: [
+        {
+          label: `Avg Fwd ${horizon}-Period Return (%)`,
+          data: fwdReturnsByDD,
+          backgroundColor: fwdReturnsByDD.map(v => v >= 0 ? 'rgba(34,197,94,0.6)' : 'rgba(239,68,68,0.6)'),
+          borderColor: fwdReturnsByDD.map(v => v >= 0 ? '#22c55e' : '#ef4444'),
+          borderWidth: 1,
+          borderRadius: 3,
+          yAxisID: 'y'
+        },
+        {
+          label: `Ann. Sharpe (${horizon}p fwd)`,
+          data: fwdSharpeByDD,
+          type: 'line',
+          borderColor: '#a855f7',
+          backgroundColor: 'rgba(168,85,247,0.2)',
+          borderWidth: 2,
+          pointRadius: 4,
+          pointBackgroundColor: '#a855f7',
+          tension: 0.3,
+          yAxisID: 'y1'
+        }
+      ]
+    },
+    options: {
+      ...chartDefaults,
+      plugins: {
+        ...chartDefaults.plugins,
+        legend: { display: true, labels: { color: '#64748b', font: { size: 10, family: 'inherit' }, boxWidth: 12, padding: 16 } }
+      },
+      scales: {
+        x: {
+          grid: { display: false },
+          ticks: { color: '#64748b', font: { size: 11, family: 'inherit' } }
+        },
+        y: {
+          position: 'left',
+          grid: { color: 'rgba(30,41,59,0.5)', drawBorder: false },
+          ticks: { color: '#64748b', font: { size: 10, family: 'inherit' }, callback: v => v.toFixed(1) + '%' },
+          title: { display: true, text: 'Forward Return %', color: '#475569', font: { size: 10, family: 'inherit' } }
+        },
+        y1: {
+          position: 'right',
+          grid: { display: false },
+          ticks: { color: '#a855f7', font: { size: 10, family: 'inherit' } },
+          title: { display: true, text: 'Sharpe', color: '#a855f7', font: { size: 10, family: 'inherit' } }
+        }
+      }
+    }
+  });
+
+  // Sharpe by DD Bucket
+  const colors = ['#3b82f6', '#22c55e', '#eab308', '#ef4444'];
+  chartInstances.sharpeBuckets = new Chart(document.getElementById('chart-sharpe-buckets'), {
+    type: 'bar',
+    data: {
+      labels: ddLabels,
+      datasets: forwardPeriods.map((h, idx) => ({
+        label: `${h}-period fwd`,
+        data: ddBucketResults.map(b => b.stats[h]?.sharpe || 0),
+        backgroundColor: colors[idx] + '99',
+        borderColor: colors[idx],
+        borderWidth: 1,
+        borderRadius: 2,
+      }))
+    },
+    options: {
+      ...chartDefaults,
+      plugins: {
+        ...chartDefaults.plugins,
+        legend: { display: true, labels: { color: '#64748b', font: { size: 10, family: 'inherit' }, boxWidth: 12, padding: 12 } }
+      },
+      scales: {
+        x: { grid: { display: false }, ticks: { color: '#64748b', font: { size: 10, family: 'inherit' } } },
+        y: {
+          ...chartDefaults.scales.y,
+          title: { display: true, text: 'Annualized Sharpe', color: '#475569', font: { size: 10, family: 'inherit' } }
+        }
+      }
+    }
+  });
+
+  // Sharpe by Momentum Bucket
+  const momLabels = momBucketResults.map(b => b.label);
+  chartInstances.sharpeMomentum = new Chart(document.getElementById('chart-sharpe-momentum'), {
+    type: 'bar',
+    data: {
+      labels: momLabels,
+      datasets: forwardPeriods.map((h, idx) => ({
+        label: `${h}-period fwd`,
+        data: momBucketResults.map(b => b.stats[h]?.sharpe || 0),
+        backgroundColor: colors[idx] + '99',
+        borderColor: colors[idx],
+        borderWidth: 1,
+        borderRadius: 2,
+      }))
+    },
+    options: {
+      ...chartDefaults,
+      plugins: {
+        ...chartDefaults.plugins,
+        legend: { display: true, labels: { color: '#64748b', font: { size: 10, family: 'inherit' }, boxWidth: 12, padding: 12 } }
+      },
+      scales: {
+        x: { grid: { display: false }, ticks: { color: '#64748b', font: { size: 10, family: 'inherit' }, maxRotation: 20 } },
+        y: {
+          ...chartDefaults.scales.y,
+          title: { display: true, text: 'Annualized Sharpe', color: '#475569', font: { size: 10, family: 'inherit' } }
+        }
+      }
+    }
+  });
+}
+
+// ── Init with DB fallback to direct API ─────────────────────
+async function initFromDB(range) {
+  const [snapshotData, latestData] = await Promise.all([
+    fetchDBSnapshots(range),
+    fetchDBLatest()
+  ]);
+
+  if (!snapshotData.snapshots || snapshotData.snapshots.length === 0) {
+    throw new Error('No DB snapshots available');
+  }
+
+  currentDataSource = 'db';
+  updateDataSourceIndicator('db');
+
+  const liveData = latestData.live || null;
+  const analytics = computeAnalyticsFromDB(snapshotData.snapshots, liveData);
+  const signalResult = computeSignals(analytics);
+  renderDashboard(null, analytics, signalResult);
+
+  const backtest = runBacktest(analytics);
+  renderBacktest(backtest);
+}
+
+async function initFromAPI() {
+  const data = await fetchVaultDetails();
+  const analytics = computeAnalytics(data);
+  const signalResult = computeSignals(analytics);
+
+  currentDataSource = 'api';
+  updateDataSourceIndicator('api');
+
+  renderDashboard(data, analytics, signalResult);
+
+  const backtest = runBacktest(analytics);
+  renderBacktest(backtest);
+}
+
+async function init(range) {
+  range = range || currentRange;
+  currentRange = range;
+
+  try {
+    // Try DB first
+    await initFromDB(range);
+  } catch (dbErr) {
+    console.warn('DB unavailable, falling back to direct API:', dbErr.message);
+    try {
+      await initFromAPI();
+    } catch (apiErr) {
+      document.getElementById('loading').innerHTML = `
+        <div class="error-msg">Failed to load HLP data: ${apiErr.message}</div>
+        <p style="color:var(--muted);font-size:13px;">Both the database API and direct Hyperliquid API are unavailable. Check console for details.</p>
+      `;
+      console.error('DB error:', dbErr);
+      console.error('API error:', apiErr);
+    }
+  }
+}
+
+// ── Time Range Selector ─────────────────────────────────────
+document.getElementById('range-selector').addEventListener('click', (e) => {
+  const btn = e.target.closest('.range-btn');
+  if (!btn) return;
+
+  // Update active state
+  document.querySelectorAll('.range-btn').forEach(b => b.classList.remove('active'));
+  btn.classList.add('active');
+
+  const range = btn.dataset.range;
+  init(range);
+});
+
+// ── Auto-refresh every 5 minutes ────────────────────────────
+refreshInterval = setInterval(() => init(), 5 * 60 * 1000);
+
+// ── Start ───────────────────────────────────────────────────
+init();
+</script>
+</body>
+</html>
