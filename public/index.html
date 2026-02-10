@@ -483,18 +483,51 @@
     </p>
   </div>
 
+  <!-- Return Drivers -->
+  <div id="return-drivers-section" style="display:none;">
+    <div class="chart-card" style="margin-bottom:24px;">
+      <h3>Return Drivers: PnL Attribution by Strategy</h3>
+      <p style="font-size:12px;color:var(--muted);margin-bottom:16px;">
+        HLP deploys capital across multiple sub-strategies. This chart decomposes cumulative PnL
+        by strategy vault to show where returns originate.
+      </p>
+      <div class="chart-wrap" style="height:300px;"><canvas id="chart-pnl-attribution"></canvas></div>
+    </div>
+
+    <div class="chart-grid" style="margin-bottom:24px;">
+      <div class="chart-card">
+        <h3>Current Net Position Exposure</h3>
+        <div id="position-exposure-table" style="overflow-x:auto;max-height:400px;overflow-y:auto;"></div>
+      </div>
+      <div class="chart-card">
+        <h3>Cumulative Funding by Asset</h3>
+        <div class="chart-wrap" style="height:300px;"><canvas id="chart-funding-breakdown"></canvas></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Calibrated Weights -->
+  <div class="methodology" style="margin-bottom:24px;">
+    <div id="calibrated-weights"></div>
+  </div>
+
   <!-- Methodology -->
   <div class="methodology">
     <h3>Signal Framework Methodology</h3>
-    <p>The composite score (0-100) aggregates five independent signals, each scored 0-100 where higher = more edge for a new deposit. The signals are weighted by predictive importance:</p>
+    <p>The composite score (0-100) aggregates seven independent signals, each scored 0-100 where higher = more edge for a new deposit. The signals are weighted by predictive importance:</p>
     <ul>
-      <li><strong>Drawdown from ATH (30%):</strong> Deeper drawdowns in a positive-EV strategy = cheaper entry. Scored exponentially: 0% DD=0, 2%=30, 5%=65, 9%+=95.</li>
-      <li><strong>TVL Momentum (25%):</strong> Falling TVL means fewer depositors competing for the same MM edge. Measured as % change over the trailing window. Negative TVL change = higher score.</li>
-      <li><strong>Return Momentum (20%):</strong> After a streak of negative days, mean reversion favors new entrants. Measured by the ratio of negative to positive days in the recent window.</li>
+      <li><strong>Drawdown from ATH (25%):</strong> Deeper drawdowns in a positive-EV strategy = cheaper entry. Scored exponentially: 0% DD=0, 2%=30, 5%=65, 9%+=95.</li>
+      <li><strong>TVL Momentum (15%):</strong> Falling TVL means fewer depositors competing for the same MM edge. Measured as % change over the trailing window. Negative TVL change = higher score.</li>
+      <li><strong>Return Momentum (15%):</strong> After a streak of negative days, mean reversion favors new entrants. Measured by the ratio of negative to positive days in the recent window.</li>
       <li><strong>Volatility Regime (15%):</strong> High realized vol that is starting to decline = best entry. The vault's edge accrues in calmer regimes after drawdowns caused by vol spikes.</li>
-      <li><strong>APR Relative Value (10%):</strong> Current APR vs. historical median. Below-median APR after a drawdown suggests the headline yield hasn't yet recovered, meaning less competition from yield-chasing inflows.</li>
+      <li><strong>APR Relative Value (5%):</strong> Current APR vs. historical median. Below-median APR after a drawdown suggests the headline yield hasn't yet recovered, meaning less competition from yield-chasing inflows.</li>
+      <li><strong>Funding Rate (15%):</strong> OI-weighted average funding across all HL perps. High positive funding means leveraged longs are paying shorts — HLP collects as counterparty. Negative funding = less fee accrual.</li>
+      <li><strong>Open Interest Trend (10%):</strong> 7-day change in exchange-wide open interest. Surging OI = more flow and fee opportunities for HLP. Collapsing OI = fewer traders and less revenue.</li>
     </ul>
     <p style="margin-top:12px;"><strong>Interpretation:</strong> 0-25 = No Edge (wait). 25-50 = Low Edge (neutral). 50-70 = Moderate Edge (consider). 70-85 = Strong Edge (favorable). 85-100 = Max Edge (rare, post-crash).</p>
+    <p style="margin-top:12px;"><strong>Forward Estimates:</strong> Using backtest data, we show the historical median forward return when entering at the current drawdown level. This is based on bucketed analysis of all historical entry points.</p>
+    <p style="margin-top:8px;"><strong>Kelly Criterion:</strong> Position sizing computed from backtest win rate and payoff ratio at the current drawdown bucket. We use half-Kelly (standard safety margin) clamped to 0-50% of drawdown tolerance.</p>
+    <p style="margin-top:8px;"><strong>Weight Calibration:</strong> Signal weights are calibrated by measuring the Sharpe spread (best-bucket minus worst-bucket) per signal dimension from backtest results. Signals with higher predictive power get more weight.</p>
     <p style="margin-top:8px;">Based on the Chaos Labs "Yield as a Risk Signal: Part II" framework. This is not financial advice. MM vaults are risk assets — size to drawdown.</p>
   </div>
 </div>
@@ -530,6 +563,95 @@ async function fetchDBLatest() {
   const resp = await fetch('/api/latest');
   if (!resp.ok) throw new Error(`DB Latest API error: ${resp.status}`);
   return resp.json();
+}
+
+// ── Market Context: HL exchange-wide funding, OI, volume ─────
+async function fetchMarketContextFrontend() {
+  const resp = await fetch(API_URL, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ type: 'metaAndAssetCtxs' })
+  });
+  if (!resp.ok) throw new Error(`Market context API error: ${resp.status}`);
+  const [meta, assetCtxs] = await resp.json();
+
+  let totalOI = 0, totalVolume = 0, weightedFunding = 0, totalOIForWeighting = 0;
+  for (const ctx of assetCtxs) {
+    const oi = parseFloat(ctx.openInterest || 0);
+    const vol = parseFloat(ctx.dayNtlVlm || 0);
+    const funding = parseFloat(ctx.funding || 0);
+    totalOI += oi;
+    totalVolume += vol;
+    if (oi > 0) { weightedFunding += funding * oi; totalOIForWeighting += oi; }
+  }
+  const fundingRate = totalOIForWeighting > 0 ? weightedFunding / totalOIForWeighting : 0;
+  return { fundingRate, totalOI, volume24h: totalVolume };
+}
+
+// ── Return Drivers: Child Vault PnL, Positions, Funding ─────
+async function fetchReturnDrivers(parentData) {
+  const childAddresses = parentData?.relationship?.data?.childAddresses || [];
+  if (childAddresses.length === 0) return null;
+
+  // Fetch vaultDetails + clearinghouseState for all children in parallel
+  const [childDetails, states] = await Promise.all([
+    Promise.all(
+      childAddresses.map(addr =>
+        fetch(API_URL, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ type: 'vaultDetails', vaultAddress: addr })
+        }).then(r => r.ok ? r.json() : null).catch(() => null)
+      )
+    ),
+    Promise.all(
+      childAddresses.map(addr =>
+        fetch(API_URL, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ type: 'clearinghouseState', user: addr })
+        }).then(r => r.ok ? r.json() : null).catch(() => null)
+      )
+    )
+  ]);
+
+  // Classify vaults
+  const vaults = childAddresses.map((addr, i) => {
+    const details = childDetails[i];
+    const state = states[i];
+    const positions = state?.assetPositions || [];
+    const accountValue = parseFloat(state?.marginSummary?.accountValue || 0);
+    const portfolio = details?.portfolio ? Object.fromEntries(details.portfolio) : {};
+    const allTime = portfolio['allTime'];
+    const pnlHistory = allTime?.pnlHistory?.map(([ts, val]) => ({
+      time: ts, value: parseFloat(val)
+    })) || [];
+    return { addr, positions, accountValue, pnlHistory, name: details?.name || addr.slice(0, 10) };
+  });
+
+  const active = vaults.filter(v => v.positions.length > 0);
+  const others = vaults.filter(v => v.positions.length === 0 && v.pnlHistory.length > 0);
+
+  // Build net positions across all active strategy vaults
+  const positionMap = new Map();
+  for (const vault of active) {
+    for (const ap of vault.positions) {
+      const p = ap.position;
+      const coin = p.coin;
+      if (!positionMap.has(coin)) {
+        positionMap.set(coin, { coin, netSize: 0, netNotional: 0, netUnrealizedPnl: 0, netFunding: 0, grossNotional: 0 });
+      }
+      const entry = positionMap.get(coin);
+      const szi = parseFloat(p.szi);
+      const posVal = parseFloat(p.positionValue);
+      entry.netSize += szi;
+      entry.netUnrealizedPnl += parseFloat(p.unrealizedPnl);
+      entry.netFunding += parseFloat(p.cumFunding?.sinceOpen || 0);
+      entry.grossNotional += Math.abs(posVal);
+    }
+  }
+
+  return { vaults, active, others, positionMap };
 }
 
 // ── Compute analytics from DB snapshots ─────────────────────
@@ -643,6 +765,23 @@ function computeAnalyticsFromDB(snapshots, liveData) {
   const lastApr = snapshots[snapshots.length - 1]?.apr;
   const currentApr = liveData ? liveData.apr : (lastApr != null ? parseFloat(lastApr) : 0);
 
+  // Extract market context from latest snapshots
+  const latestSnap = snapshots[snapshots.length - 1];
+  const fundingRate = latestSnap?.funding_rate != null ? parseFloat(latestSnap.funding_rate) : 0;
+  const totalOI = latestSnap?.open_interest != null ? parseFloat(latestSnap.open_interest) : 0;
+  const volume24h = latestSnap?.volume_24h != null ? parseFloat(latestSnap.volume_24h) : 0;
+
+  // OI change 7d
+  const snapsWithOI = snapshots.filter(s => s.open_interest != null && parseFloat(s.open_interest) > 0);
+  let oiChange7d = 0;
+  if (snapsWithOI.length >= 2) {
+    const latestOIVal = parseFloat(snapsWithOI[snapsWithOI.length - 1].open_interest);
+    const sevenDaysAgoTime = Date.now() - 7 * 24 * 3600 * 1000;
+    const snap7dOI = snapsWithOI.filter(s => new Date(s.collected_at).getTime() >= sevenDaysAgoTime);
+    const oiAgo = snap7dOI.length > 0 ? parseFloat(snap7dOI[0].open_interest) : latestOIVal;
+    if (oiAgo > 0) oiChange7d = (latestOIVal - oiAgo) / oiAgo;
+  }
+
   return {
     navHistory, pnlHistory, drawdownHistory, dailyReturns, rolling7, dailyNavs,
     currentNav, currentPnl, ath, currentDrawdown, maxDD,
@@ -653,7 +792,8 @@ function computeAnalyticsFromDB(snapshots, liveData) {
     currentApr,
     recent30, recent7,
     maxDistributable: liveData ? liveData.maxDistributable : 0,
-    allowDeposits: liveData ? liveData.allowDeposits : true
+    allowDeposits: liveData ? liveData.allowDeposits : true,
+    fundingRate, totalOI, volume24h, oiChange7d
   };
 }
 
@@ -797,7 +937,7 @@ function computeSignals(a) {
   else ddScore = 98;
 
   signals.drawdown = {
-    score: ddScore, weight: 0.30,
+    score: ddScore, weight: 0.25,
     label: 'Drawdown from ATH',
     detail: `${(a.currentDrawdown * 100).toFixed(2)}% from ATH ($${formatNum(a.ath)})`,
     explanation: ddPct < 1
@@ -820,7 +960,7 @@ function computeSignals(a) {
   else tvlScore = 95;
 
   signals.tvl = {
-    score: tvlScore, weight: 0.25,
+    score: tvlScore, weight: 0.15,
     label: 'TVL Momentum',
     detail: `7d: ${tvl7 >= 0 ? '+' : ''}${tvl7.toFixed(2)}% | 30d: ${(a.tvlChange30d * 100) >= 0 ? '+' : ''}${(a.tvlChange30d * 100).toFixed(2)}%`,
     explanation: tvl7 > 1
@@ -843,7 +983,7 @@ function computeSignals(a) {
   else retScore = 95;
 
   signals.momentum = {
-    score: retScore, weight: 0.20,
+    score: retScore, weight: 0.15,
     label: 'Return Momentum',
     detail: `7d avg daily: ${(recent7Avg * 100).toFixed(3)}% | 30d hit rate: ${(a.hitRate * 100).toFixed(0)}% (${a.positiveDays}+/${a.negativeDays}-)`,
     explanation: recent7Avg > 0.001
@@ -882,7 +1022,7 @@ function computeSignals(a) {
   else aprScore = 90;
 
   signals.apr = {
-    score: aprScore, weight: 0.10,
+    score: aprScore, weight: 0.05,
     label: 'APR Relative Value',
     detail: `Current APR: ${aprPct.toFixed(1)}%`,
     explanation: aprPct > 25
@@ -892,6 +1032,47 @@ function computeSignals(a) {
       : 'Low APR — fewer yield-chasers entering. Contrarian entry: APR tends to mean-revert upward after drawdowns.'
   };
 
+  // 6. Funding Rate (15%)
+  const fundingBps = (a.fundingRate || 0) * 10000;
+  let fundingScore;
+  if (fundingBps > 5) fundingScore = 90;
+  else if (fundingBps > 2) fundingScore = 75;
+  else if (fundingBps > 0.5) fundingScore = 60;
+  else if (fundingBps > -0.5) fundingScore = 45;
+  else if (fundingBps > -2) fundingScore = 25;
+  else fundingScore = 15;
+
+  signals.funding = {
+    score: fundingScore, weight: 0.15,
+    label: 'Funding Rate',
+    detail: `OI-wtd avg: ${fundingBps.toFixed(2)} bps/8h`,
+    explanation: fundingBps > 2
+      ? 'High positive funding — leveraged longs paying shorts. HLP collects as counterparty. Favorable.'
+      : fundingBps > -0.5
+      ? 'Funding near neutral. Balanced positioning across the exchange.'
+      : 'Negative funding — shorts dominating. Less fee accrual for HLP as counterparty.'
+  };
+
+  // 7. Open Interest Trend (10%)
+  const oiChange = (a.oiChange7d || 0) * 100;
+  let oiScore;
+  if (oiChange > 10) oiScore = 90;
+  else if (oiChange > 3) oiScore = 70;
+  else if (oiChange > -3) oiScore = 50;
+  else if (oiChange > -5) oiScore = 30;
+  else oiScore = 15;
+
+  signals.oi = {
+    score: oiScore, weight: 0.10,
+    label: 'Open Interest Trend',
+    detail: `7d OI change: ${oiChange >= 0 ? '+' : ''}${oiChange.toFixed(1)}% | Total OI: $${formatNum(a.totalOI || 0)}`,
+    explanation: oiChange > 3
+      ? 'Open interest surging — more flow through the exchange means more counterparty activity for HLP.'
+      : oiChange > -3
+      ? 'Open interest stable. Neutral signal for HLP fee generation.'
+      : 'Open interest collapsing — fewer traders means less flow and fee income for HLP.'
+  };
+
   let composite = 0;
   for (const s of Object.values(signals)) {
     composite += s.score * s.weight;
@@ -899,6 +1080,129 @@ function computeSignals(a) {
   composite = Math.round(composite);
 
   return { signals, composite };
+}
+
+// ── Forward Estimates ────────────────────────────────────────
+function getForwardEstimate(backtest, analytics) {
+  if (!backtest || backtest.totalPoints < 10) return null;
+  const ddPct = Math.abs(analytics.currentDrawdown) * 100;
+  const { ddBucketResults, forwardPeriods } = backtest;
+
+  // Find which DD bucket current drawdown falls into
+  let matchedBucket = null;
+  for (const b of ddBucketResults) {
+    const minPct = Math.abs(b.min) * 100;
+    const maxPct = Math.abs(b.max) * 100;
+    if (ddPct >= maxPct && ddPct < minPct) { matchedBucket = b; break; }
+    if (ddPct >= Math.abs(b.max) * 100 && ddPct <= Math.abs(b.min) * 100) { matchedBucket = b; break; }
+  }
+  // Fallback: find bucket by raw drawdown value
+  if (!matchedBucket) {
+    const rawDD = analytics.currentDrawdown; // negative
+    for (const b of ddBucketResults) {
+      if (rawDD >= b.min && rawDD < b.max) { matchedBucket = b; break; }
+    }
+  }
+  if (!matchedBucket) matchedBucket = ddBucketResults[0];
+
+  // Use 10-period horizon (index 2) or last available
+  const horizon = forwardPeriods.includes(10) ? 10 : forwardPeriods[forwardPeriods.length - 1];
+  const stats = matchedBucket.stats[horizon];
+  if (!stats || stats.n < 3) return null;
+
+  return {
+    bucket: matchedBucket.label,
+    horizon,
+    median: stats.median,
+    mean: stats.mean,
+    sharpe: stats.sharpe,
+    n: stats.n
+  };
+}
+
+// ── Weight Calibration ──────────────────────────────────────
+function calibrateWeights(backtest) {
+  if (!backtest || backtest.totalPoints < 50) return { sufficient: false, weights: null };
+
+  const { ddBucketResults, momBucketResults } = backtest;
+  const horizon = 10;
+
+  // Compute Sharpe spread per dimension
+  function sharpeSpread(buckets) {
+    const sharpes = buckets.map(b => b.stats[horizon]?.sharpe || 0).filter(v => !isNaN(v));
+    if (sharpes.length < 2) return 0;
+    return Math.max(...sharpes) - Math.min(...sharpes);
+  }
+
+  const spreads = {
+    drawdown: sharpeSpread(ddBucketResults),
+    tvl: 0.3,       // default spread for signals without backtest buckets
+    momentum: sharpeSpread(momBucketResults),
+    volatility: 0.2,
+    apr: 0.1,
+    funding: 0.25,
+    oi: 0.15
+  };
+
+  const totalSpread = Object.values(spreads).reduce((s, v) => s + Math.abs(v), 0);
+  if (totalSpread === 0) return { sufficient: false, weights: null };
+
+  const calibrated = {};
+  for (const [key, spread] of Object.entries(spreads)) {
+    calibrated[key] = Math.abs(spread) / totalSpread;
+  }
+
+  return { sufficient: true, weights: calibrated };
+}
+
+// ── Kelly Criterion ─────────────────────────────────────────
+function computeKelly(backtest, analytics) {
+  if (!backtest || backtest.totalPoints < 20) return null;
+
+  const ddPct = Math.abs(analytics.currentDrawdown) * 100;
+  const rawDD = analytics.currentDrawdown;
+  const { ddBucketResults, forwardPeriods } = backtest;
+
+  // Find current DD bucket
+  let matchedBucket = null;
+  for (const b of ddBucketResults) {
+    if (rawDD >= b.min && rawDD < b.max) { matchedBucket = b; break; }
+  }
+  if (!matchedBucket) matchedBucket = ddBucketResults[0];
+
+  const horizon = forwardPeriods.includes(10) ? 10 : forwardPeriods[forwardPeriods.length - 1];
+  const stats = matchedBucket.stats[horizon];
+  if (!stats || stats.n < 5) return null;
+
+  // Use rawForwards if available, otherwise derive from stats
+  const rawFwds = matchedBucket.rawForwards?.[horizon];
+  let wins, losses;
+  if (rawFwds && rawFwds.length > 0) {
+    wins = rawFwds.filter(r => r > 0);
+    losses = rawFwds.filter(r => r <= 0);
+  } else {
+    // Approximate from mean/std
+    const p = stats.mean > 0 ? 0.6 : 0.4;
+    const avgWin = Math.abs(stats.mean) + stats.std * 0.5;
+    const avgLoss = Math.max(0.001, stats.std * 0.5 - (stats.mean > 0 ? 0 : Math.abs(stats.mean)));
+    const b = avgWin / Math.max(0.001, avgLoss);
+    const q = 1 - p;
+    const kellyFull = (p * b - q) / Math.max(0.001, b);
+    const halfKelly = Math.max(0, Math.min(0.5, kellyFull / 2));
+    return { kelly: halfKelly, winRate: p, avgWin, avgLoss, odds: b, n: stats.n, bucket: matchedBucket.label };
+  }
+
+  if (wins.length === 0) return { kelly: 0, winRate: 0, avgWin: 0, avgLoss: 0, odds: 0, n: stats.n, bucket: matchedBucket.label };
+
+  const p = wins.length / (wins.length + losses.length);
+  const avgWin = wins.reduce((s, v) => s + v, 0) / wins.length;
+  const avgLoss = losses.length > 0 ? Math.abs(losses.reduce((s, v) => s + v, 0) / losses.length) : 0.001;
+  const b = avgWin / Math.max(0.001, avgLoss);
+  const q = 1 - p;
+  const kellyFull = (p * b - q) / Math.max(0.001, b);
+  const halfKelly = Math.max(0, Math.min(0.5, kellyFull / 2));
+
+  return { kelly: halfKelly, winRate: p, avgWin, avgLoss, odds: b, n: stats.n, bucket: matchedBucket.label };
 }
 
 // ── Rendering ───────────────────────────────────────────────
@@ -943,7 +1247,7 @@ function updateDataSourceIndicator(source) {
   }
 }
 
-function renderDashboard(data, analytics, signalResult) {
+function renderDashboard(data, analytics, signalResult, backtest) {
   const { signals, composite } = signalResult;
 
   document.getElementById('loading').style.display = 'none';
@@ -963,7 +1267,19 @@ function renderDashboard(data, analytics, signalResult) {
 
   const verdict = getVerdict(composite);
   document.getElementById('verdict-title').textContent = verdict.title;
-  document.getElementById('verdict-text').innerHTML = verdict.text;
+
+  // Append forward estimate and Kelly to verdict
+  let verdictExtra = '';
+  const fwdEst = getForwardEstimate(backtest, analytics);
+  const kelly = computeKelly(backtest, analytics);
+  if (fwdEst) {
+    const retSign = fwdEst.median >= 0 ? '+' : '';
+    verdictExtra += ` Entering at this drawdown level (${fwdEst.bucket} DD) historically produced <strong>${retSign}${(fwdEst.median * 100).toFixed(2)}%</strong> median return over ${fwdEst.horizon} periods (n=${fwdEst.n}).`;
+  }
+  if (kelly && kelly.kelly > 0) {
+    verdictExtra += ` Kelly criterion suggests sizing to <strong>${(kelly.kelly * 100).toFixed(0)}%</strong> of your drawdown tolerance.`;
+  }
+  document.getElementById('verdict-text').innerHTML = verdict.text + verdictExtra;
 
   // Signal bars
   const barsContainer = document.getElementById('signal-bars');
@@ -994,6 +1310,27 @@ function renderDashboard(data, analytics, signalResult) {
     { label: 'Deposits', value: analytics.allowDeposits ? 'OPEN' : 'CLOSED', sub: `TVL: $${formatNum(analytics.maxDistributable)}`, cls: analytics.allowDeposits ? 'positive' : 'negative' },
   ];
 
+  // Add forward estimate metric
+  if (fwdEst) {
+    const retSign = fwdEst.median >= 0 ? '+' : '';
+    metrics.push({
+      label: 'Expected Forward Return',
+      value: `${retSign}${(fwdEst.median * 100).toFixed(2)}%`,
+      sub: `${fwdEst.bucket} DD bucket | ${fwdEst.horizon}p horizon | n=${fwdEst.n}`,
+      cls: fwdEst.median > 0 ? 'positive' : 'negative'
+    });
+  }
+
+  // Add Kelly metric
+  if (kelly && kelly.kelly > 0) {
+    metrics.push({
+      label: 'Kelly Position Size',
+      value: `${(kelly.kelly * 100).toFixed(0)}%`,
+      sub: `Half-Kelly | Win: ${(kelly.winRate * 100).toFixed(0)}%, b=${kelly.odds.toFixed(2)} (n=${kelly.n})`,
+      cls: 'positive'
+    });
+  }
+
   metricsRow.innerHTML = metrics.map(m => `
     <div class="metric-card">
       <div class="metric-label">${m.label}</div>
@@ -1017,6 +1354,43 @@ function renderDashboard(data, analytics, signalResult) {
       <p>${sig.explanation}</p>
     `;
     signalCards.appendChild(card);
+  }
+
+  // Calibrated weights
+  const calibration = calibrateWeights(backtest);
+  const calibDiv = document.getElementById('calibrated-weights');
+  if (calibDiv && calibration.sufficient) {
+    const defaultWeights = { drawdown: 0.25, tvl: 0.15, momentum: 0.15, volatility: 0.15, apr: 0.05, funding: 0.15, oi: 0.10 };
+    const labels = { drawdown: 'Drawdown', tvl: 'TVL Momentum', momentum: 'Return Momentum', volatility: 'Volatility', apr: 'APR Value', funding: 'Funding Rate', oi: 'OI Trend' };
+    let tableRows = '';
+    for (const key of Object.keys(defaultWeights)) {
+      const def = defaultWeights[key];
+      const cal = calibration.weights[key] || 0;
+      const delta = cal - def;
+      const deltaStr = delta >= 0 ? `+${(delta * 100).toFixed(1)}` : (delta * 100).toFixed(1);
+      const deltaClass = delta > 0.02 ? 'positive' : delta < -0.02 ? 'negative' : '';
+      tableRows += `<tr style="border-bottom:1px solid rgba(30,41,59,0.3);">
+        <td style="padding:6px 8px;">${labels[key]}</td>
+        <td style="text-align:center;padding:6px 8px;">${(def * 100).toFixed(0)}%</td>
+        <td style="text-align:center;padding:6px 8px;">${(cal * 100).toFixed(1)}%</td>
+        <td style="text-align:center;padding:6px 8px;" class="${deltaClass}">${deltaStr}%</td>
+      </tr>`;
+    }
+    calibDiv.innerHTML = `
+      <h3 style="font-size:14px;font-weight:600;margin-bottom:12px;">Signal Weight Calibration (Sharpe-Spread Based)</h3>
+      <table style="width:100%;border-collapse:collapse;font-size:12px;">
+        <thead><tr style="border-bottom:1px solid var(--border);">
+          <th style="text-align:left;padding:8px;color:var(--muted);">Signal</th>
+          <th style="text-align:center;padding:8px;color:var(--muted);">Default</th>
+          <th style="text-align:center;padding:8px;color:var(--muted);">Calibrated</th>
+          <th style="text-align:center;padding:8px;color:var(--muted);">Delta</th>
+        </tr></thead>
+        <tbody>${tableRows}</tbody>
+      </table>
+      <p style="margin-top:8px;font-size:11px;color:var(--muted);">Calibrated from backtest Sharpe spreads across ${backtest.totalPoints} data points.</p>
+    `;
+  } else if (calibDiv) {
+    calibDiv.innerHTML = '<p style="font-size:12px;color:var(--muted);">Insufficient data for weight calibration (need 50+ backtest points).</p>';
   }
 
   // Charts
@@ -1126,38 +1500,65 @@ function renderCharts(a) {
     }
   });
 
-  // 2. Daily Returns Distribution
+  // 2. Daily Returns Distribution (fine-grained)
   const allReturns = a.dailyReturns;
   const bins = {};
   const retValues = allReturns.map(d => d.value * 100);
   const retRange = retValues.length > 0 ? Math.max(...retValues) - Math.min(...retValues) : 1;
-  const binSize = Math.max(0.1, Math.round(retRange / 15 * 10) / 10);
+  // Target ~30-40 bins for more granularity; floor to nice increments (0.01, 0.02, 0.05, 0.1...)
+  const rawBin = retRange / 35;
+  const niceSteps = [0.01, 0.02, 0.05, 0.1, 0.2, 0.5, 1.0];
+  const binSize = niceSteps.find(s => s >= rawBin) || Math.max(0.05, Math.round(rawBin * 100) / 100);
+  const decimals = binSize < 0.1 ? 2 : 1;
   for (const d of allReturns) {
     const bin = Math.round((d.value * 100) / binSize) * binSize;
-    const key = bin.toFixed(1);
+    const key = bin.toFixed(decimals);
     bins[key] = (bins[key] || 0) + 1;
   }
   const sortedKeys = Object.keys(bins).sort((a, b) => parseFloat(a) - parseFloat(b));
+
+  // Compute stats for annotation
+  const retMean = retValues.length > 0 ? retValues.reduce((s, v) => s + v, 0) / retValues.length : 0;
+  const retStd = retValues.length > 1
+    ? Math.sqrt(retValues.reduce((s, v) => s + Math.pow(v - retMean, 2), 0) / (retValues.length - 1)) : 0;
 
   chartInstances.returns = new Chart(document.getElementById('chart-returns'), {
     type: 'bar',
     data: {
       labels: sortedKeys.map(k => k + '%'),
       datasets: [{
-        label: 'Days',
+        label: 'Periods',
         data: sortedKeys.map(k => bins[k]),
-        backgroundColor: sortedKeys.map(k => parseFloat(k) >= 0 ? 'rgba(34,197,94,0.6)' : 'rgba(239,68,68,0.6)'),
+        backgroundColor: sortedKeys.map(k => parseFloat(k) >= 0 ? 'rgba(34,197,94,0.5)' : 'rgba(239,68,68,0.5)'),
         borderColor: sortedKeys.map(k => parseFloat(k) >= 0 ? '#22c55e' : '#ef4444'),
         borderWidth: 1,
-        borderRadius: 2,
+        borderRadius: 1,
+        barPercentage: 1.0,
+        categoryPercentage: 0.95,
       }]
     },
     options: {
       ...chartDefaults,
+      plugins: {
+        ...chartDefaults.plugins,
+        subtitle: {
+          display: true,
+          text: `\u03bc=${retMean.toFixed(3)}%  \u03c3=${retStd.toFixed(3)}%  n=${retValues.length}`,
+          color: '#64748b',
+          font: { size: 10, family: 'inherit' },
+          padding: { bottom: 8 }
+        }
+      },
       scales: {
         x: {
           grid: { display: false },
-          ticks: { color: '#64748b', font: { size: 9, family: 'inherit' }, maxRotation: 45 }
+          ticks: {
+            color: '#64748b',
+            font: { size: 8, family: 'inherit' },
+            maxRotation: 60,
+            autoSkip: true,
+            maxTicksLimit: 20,
+          }
         },
         y: {
           ...chartDefaults.scales.y,
@@ -1253,7 +1654,9 @@ function renderCharts(a) {
 
 // ── Backtest Engine ─────────────────────────────────────────
 function runBacktest(analytics) {
-  const nav = analytics.navHistory;
+  // Filter to 2024+ — pre-2024 HLP TVL was too low for meaningful signals
+  const cutoff2024 = new Date('2024-01-01').getTime();
+  const nav = analytics.navHistory.filter(d => d.time >= cutoff2024);
   if (nav.length < 10) return null;
 
   let ath = 0;
@@ -1319,8 +1722,10 @@ function runBacktest(analytics) {
   const ddBucketResults = ddBuckets.map(bucket => {
     const entries = backtestResults.filter(r => r.drawdown >= bucket.min && r.drawdown < bucket.max);
     const stats = {};
+    const rawForwards = {};
     for (const h of forwardPeriods) {
       const fwdReturns = entries.map(e => e.forward[h]).filter(v => v !== undefined);
+      rawForwards[h] = fwdReturns;
       if (fwdReturns.length > 0) {
         const mean = fwdReturns.reduce((s, v) => s + v, 0) / fwdReturns.length;
         const variance = fwdReturns.length > 1
@@ -1330,7 +1735,7 @@ function runBacktest(analytics) {
         stats[h] = { mean, std, sharpe, n: fwdReturns.length, median: sortedMedian(fwdReturns) };
       }
     }
-    return { ...bucket, entries: entries.length, stats };
+    return { ...bucket, entries: entries.length, stats, rawForwards };
   });
 
   const momBuckets = [
@@ -1344,8 +1749,10 @@ function runBacktest(analytics) {
   const momBucketResults = momBuckets.map(bucket => {
     const entries = backtestResults.filter(r => r.momentum3 >= bucket.min && r.momentum3 < bucket.max);
     const stats = {};
+    const rawForwards = {};
     for (const h of forwardPeriods) {
       const fwdReturns = entries.map(e => e.forward[h]).filter(v => v !== undefined);
+      rawForwards[h] = fwdReturns;
       if (fwdReturns.length > 0) {
         const mean = fwdReturns.reduce((s, v) => s + v, 0) / fwdReturns.length;
         const variance = fwdReturns.length > 1
@@ -1355,7 +1762,7 @@ function runBacktest(analytics) {
         stats[h] = { mean, std, sharpe, n: fwdReturns.length, median: sortedMedian(fwdReturns) };
       }
     }
-    return { ...bucket, entries: entries.length, stats };
+    return { ...bucket, entries: entries.length, stats, rawForwards };
   });
 
   return { ddBucketResults, momBucketResults, forwardPeriods, totalPoints: backtestResults.length };
@@ -1551,6 +1958,201 @@ function renderBacktest(backtest) {
   });
 }
 
+// ── Render Return Drivers ───────────────────────────────────
+function renderReturnDrivers(drivers) {
+  const section = document.getElementById('return-drivers-section');
+  if (!drivers) { section.style.display = 'none'; return; }
+  section.style.display = 'block';
+
+  const { vaults, active, others, positionMap } = drivers;
+  const cutoff2024 = new Date('2024-01-01').getTime();
+
+  // ── PnL Attribution Chart (stacked area) ──
+  // Group: combine active vaults as "Market Making", show others individually
+  const mmPnl = [];
+  if (active.length > 0) {
+    // Merge pnlHistory from all active vaults by aligning timestamps
+    const tsMap = new Map();
+    for (const v of active) {
+      for (const pt of v.pnlHistory) {
+        if (pt.time < cutoff2024) continue;
+        const existing = tsMap.get(pt.time) || 0;
+        tsMap.set(pt.time, existing + pt.value);
+      }
+    }
+    const sorted = [...tsMap.entries()].sort((a, b) => a[0] - b[0]);
+    for (const [ts, val] of sorted) {
+      mmPnl.push({ x: ts, y: val });
+    }
+  }
+
+  const strategyColors = ['#3b82f6', '#22c55e', '#eab308', '#a855f7', '#06b6d4', '#f97316', '#ec4899'];
+  const datasets = [];
+
+  if (mmPnl.length > 0) {
+    const sampleRate = Math.max(1, Math.floor(mmPnl.length / 400));
+    datasets.push({
+      label: 'Market Making (A+B)',
+      data: mmPnl.filter((_, i) => i % sampleRate === 0 || i === mmPnl.length - 1),
+      borderColor: strategyColors[0],
+      backgroundColor: strategyColors[0] + '33',
+      fill: true,
+      borderWidth: 1.5,
+      pointRadius: 0,
+      tension: 0.2,
+    });
+  }
+
+  others.forEach((v, idx) => {
+    const filtered = v.pnlHistory.filter(pt => pt.time >= cutoff2024);
+    if (filtered.length === 0) return;
+    const sampleRate = Math.max(1, Math.floor(filtered.length / 400));
+    const color = strategyColors[(idx + 1) % strategyColors.length];
+    datasets.push({
+      label: v.name,
+      data: filtered.filter((_, i) => i % sampleRate === 0 || i === filtered.length - 1).map(pt => ({ x: pt.time, y: pt.value })),
+      borderColor: color,
+      backgroundColor: color + '33',
+      fill: true,
+      borderWidth: 1.5,
+      pointRadius: 0,
+      tension: 0.2,
+    });
+  });
+
+  if (chartInstances.pnlAttribution) chartInstances.pnlAttribution.destroy();
+
+  if (datasets.length > 0) {
+    chartInstances.pnlAttribution = new Chart(document.getElementById('chart-pnl-attribution'), {
+      type: 'line',
+      data: { datasets },
+      options: {
+        ...chartDefaults,
+        plugins: {
+          ...chartDefaults.plugins,
+          legend: { display: true, labels: { color: '#64748b', font: { size: 10, family: 'inherit' }, boxWidth: 12, padding: 12 } },
+          tooltip: {
+            ...chartDefaults.plugins.tooltip,
+            mode: 'index',
+            intersect: false,
+            callbacks: {
+              label: ctx => `${ctx.dataset.label}: $${formatNum(ctx.parsed.y)}`
+            }
+          }
+        },
+        interaction: { mode: 'index', intersect: false },
+        scales: {
+          ...chartDefaults.scales,
+          y: {
+            ...chartDefaults.scales.y,
+            stacked: true,
+            ticks: { ...chartDefaults.scales.y.ticks, callback: v => '$' + formatNum(v) }
+          }
+        }
+      }
+    });
+  } else {
+    document.getElementById('chart-pnl-attribution').parentElement.innerHTML =
+      '<p style="color:var(--muted);text-align:center;padding:40px;">No historical PnL data available for child vaults.</p>';
+  }
+
+  // ── Position Exposure Table ──
+  const tableContainer = document.getElementById('position-exposure-table');
+  if (positionMap.size === 0) {
+    tableContainer.innerHTML = '<p style="color:var(--muted);padding:20px;">No active positions.</p>';
+  } else {
+    const positions = [...positionMap.values()]
+      .sort((a, b) => b.grossNotional - a.grossNotional)
+      .slice(0, 15);
+
+    let rows = '';
+    for (const p of positions) {
+      const direction = p.netSize > 0.0001 ? 'Long' : p.netSize < -0.0001 ? 'Short' : 'Neutral';
+      const dirClass = direction === 'Long' ? 'positive' : direction === 'Short' ? 'negative' : '';
+      const dirArrow = direction === 'Long' ? '&#9650;' : direction === 'Short' ? '&#9660;' : '&#9679;';
+      const pnlClass = p.netUnrealizedPnl >= 0 ? 'positive' : 'negative';
+      const fundClass = p.netFunding >= 0 ? 'positive' : 'negative';
+      rows += `<tr style="border-bottom:1px solid rgba(30,41,59,0.3);">
+        <td style="padding:6px 8px;font-weight:600;">${p.coin}</td>
+        <td style="padding:6px 8px;text-align:center;" class="${dirClass}">${dirArrow} ${direction}</td>
+        <td style="padding:6px 8px;text-align:right;">$${formatNum(p.grossNotional)}</td>
+        <td style="padding:6px 8px;text-align:right;" class="${pnlClass}">${p.netUnrealizedPnl >= 0 ? '+' : ''}$${formatNum(p.netUnrealizedPnl)}</td>
+        <td style="padding:6px 8px;text-align:right;" class="${fundClass}">${p.netFunding >= 0 ? '+' : ''}$${formatNum(p.netFunding)}</td>
+      </tr>`;
+    }
+
+    tableContainer.innerHTML = `
+      <table style="width:100%;border-collapse:collapse;font-size:12px;">
+        <thead><tr style="border-bottom:1px solid var(--border);">
+          <th style="text-align:left;padding:8px;color:var(--muted);">Coin</th>
+          <th style="text-align:center;padding:8px;color:var(--muted);">Net Direction</th>
+          <th style="text-align:right;padding:8px;color:var(--muted);">Gross Notional</th>
+          <th style="text-align:right;padding:8px;color:var(--muted);">Unrealized PnL</th>
+          <th style="text-align:right;padding:8px;color:var(--muted);">Cum Funding</th>
+        </tr></thead>
+        <tbody>${rows}</tbody>
+      </table>
+    `;
+  }
+
+  // ── Funding Breakdown Chart (horizontal bar) ──
+  if (chartInstances.fundingBreakdown) chartInstances.fundingBreakdown.destroy();
+
+  if (positionMap.size > 0) {
+    const fundingData = [...positionMap.values()]
+      .filter(p => Math.abs(p.netFunding) > 0.01)
+      .sort((a, b) => Math.abs(b.netFunding) - Math.abs(a.netFunding))
+      .slice(0, 10);
+
+    if (fundingData.length > 0) {
+      chartInstances.fundingBreakdown = new Chart(document.getElementById('chart-funding-breakdown'), {
+        type: 'bar',
+        data: {
+          labels: fundingData.map(p => p.coin),
+          datasets: [{
+            label: 'Net Cum. Funding ($)',
+            data: fundingData.map(p => p.netFunding),
+            backgroundColor: fundingData.map(p => p.netFunding >= 0 ? 'rgba(34,197,94,0.6)' : 'rgba(239,68,68,0.6)'),
+            borderColor: fundingData.map(p => p.netFunding >= 0 ? '#22c55e' : '#ef4444'),
+            borderWidth: 1,
+            borderRadius: 3,
+          }]
+        },
+        options: {
+          ...chartDefaults,
+          indexAxis: 'y',
+          plugins: {
+            ...chartDefaults.plugins,
+            legend: { display: false },
+            tooltip: {
+              ...chartDefaults.plugins.tooltip,
+              callbacks: {
+                label: ctx => `Funding: ${ctx.parsed.x >= 0 ? '+' : ''}$${formatNum(ctx.parsed.x)}`
+              }
+            }
+          },
+          scales: {
+            x: {
+              grid: { color: 'rgba(30,41,59,0.5)', drawBorder: false },
+              ticks: { color: '#64748b', font: { size: 10, family: 'inherit' }, callback: v => '$' + formatNum(v) }
+            },
+            y: {
+              grid: { display: false },
+              ticks: { color: '#e2e8f0', font: { size: 11, family: 'inherit' } }
+            }
+          }
+        }
+      });
+    } else {
+      document.getElementById('chart-funding-breakdown').parentElement.innerHTML =
+        '<p style="color:var(--muted);text-align:center;padding:40px;">No significant funding accruals.</p>';
+    }
+  } else {
+    document.getElementById('chart-funding-breakdown').parentElement.innerHTML =
+      '<p style="color:var(--muted);text-align:center;padding:40px;">No active positions.</p>';
+  }
+}
+
 // ── Init with DB fallback to direct API ─────────────────────
 async function initFromDB(range) {
   const [snapshotData, latestData] = await Promise.all([
@@ -1568,24 +2170,43 @@ async function initFromDB(range) {
   const liveData = latestData.live || null;
   const analytics = computeAnalyticsFromDB(snapshotData.snapshots, liveData);
   const signalResult = computeSignals(analytics);
-  renderDashboard(null, analytics, signalResult);
 
   const backtest = runBacktest(analytics);
+  renderDashboard(null, analytics, signalResult, backtest);
   renderBacktest(backtest);
+
+  // Return drivers — fetch live child vault data regardless of DB mode
+  fetchVaultDetails()
+    .then(parentData => fetchReturnDrivers(parentData))
+    .then(drivers => renderReturnDrivers(drivers))
+    .catch(err => { console.warn('Return drivers unavailable:', err.message); renderReturnDrivers(null); });
 }
 
 async function initFromAPI() {
-  const data = await fetchVaultDetails();
+  const [data, marketCtx] = await Promise.all([
+    fetchVaultDetails(),
+    fetchMarketContextFrontend().catch(() => ({ fundingRate: 0, totalOI: 0, volume24h: 0 }))
+  ]);
   const analytics = computeAnalytics(data);
+  // Merge market context
+  analytics.fundingRate = marketCtx.fundingRate;
+  analytics.totalOI = marketCtx.totalOI;
+  analytics.volume24h = marketCtx.volume24h;
+  analytics.oiChange7d = 0; // no trailing data in API mode
+
   const signalResult = computeSignals(analytics);
 
   currentDataSource = 'api';
   updateDataSourceIndicator('api');
 
-  renderDashboard(data, analytics, signalResult);
-
   const backtest = runBacktest(analytics);
+  renderDashboard(data, analytics, signalResult, backtest);
   renderBacktest(backtest);
+
+  // Return drivers — data already has parent vault details
+  fetchReturnDrivers(data)
+    .then(drivers => renderReturnDrivers(drivers))
+    .catch(err => { console.warn('Return drivers unavailable:', err.message); renderReturnDrivers(null); });
 }
 
 async function init(range) {

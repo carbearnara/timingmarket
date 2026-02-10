@@ -1,5 +1,5 @@
 import { getDb, insertSnapshot, getSnapshots } from '../lib/db.js';
-import { fetchVaultDetails, parseVaultData, computeSignalScores, computeTrailingSignals, parseAllTimeframes } from '../lib/hyperliquid.js';
+import { fetchVaultDetails, fetchMarketContext, parseVaultData, computeSignalScores, computeTrailingSignals, parseAllTimeframes } from '../lib/hyperliquid.js';
 
 export default async function handler(req, res) {
   // Handle CORS preflight
@@ -18,22 +18,27 @@ export default async function handler(req, res) {
   try {
     const sql = getDb();
 
-    // Fetch live data from Hyperliquid
-    const raw = await fetchVaultDetails();
+    // Fetch live data from Hyperliquid + market context in parallel
+    const [raw, marketCtx] = await Promise.all([
+      fetchVaultDetails(),
+      fetchMarketContext().catch(() => ({ fundingRate: 0, openInterest: 0, volume24h: 0 }))
+    ]);
     const parsed = parseVaultData(raw);
 
     // Get trailing 30-day snapshots from DB for signal computation
     const trailing = await getSnapshots(sql, '30d', 'hourly');
 
-    // Compute trailing signals from DB history
+    // Compute trailing signals from DB history (includes oiScore)
     const trailingSignals = computeTrailingSignals(trailing, parsed.currentNav);
 
-    // Compute full signal scores
+    // Compute full signal scores (7 signals)
     const scores = computeSignalScores({
       ...parsed,
       tvlScore: trailingSignals.tvlScore,
       momentumScore: trailingSignals.momentumScore,
-      volScore: trailingSignals.volScore
+      volScore: trailingSignals.volScore,
+      fundingRate: marketCtx.fundingRate,
+      oiScore: trailingSignals.oiScore
     });
 
     // Build snapshot row
@@ -52,7 +57,12 @@ export default async function handler(req, res) {
       tvl_score: scores.tvlScore,
       momentum_score: scores.momentumScore,
       vol_score: scores.volScore,
-      apr_score: scores.aprScore
+      apr_score: scores.aprScore,
+      funding_rate: marketCtx.fundingRate,
+      open_interest: marketCtx.openInterest,
+      volume_24h: marketCtx.volume24h,
+      funding_score: scores.fundingScore,
+      oi_score: scores.oiScore
     };
 
     const inserted = await insertSnapshot(sql, snapshot);

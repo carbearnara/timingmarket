@@ -2,6 +2,7 @@ node_modules/
 .env.local
 .env
 .vercel
+CLAUDE.md
 hlp-dashboard.html
 (5) X.html
 (5) X_files/

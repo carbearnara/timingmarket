@@ -42,6 +42,14 @@ async function main() {
   await sql`ALTER TABLE snapshots ALTER COLUMN apr DROP NOT NULL`;
   await sql`ALTER TABLE snapshots ALTER COLUMN pnl DROP NOT NULL`;
 
+  // ── 1b. Add market context + new signal columns ─────────────
+  console.log('Adding market context columns...');
+  await sql`ALTER TABLE snapshots ADD COLUMN IF NOT EXISTS funding_rate NUMERIC`;
+  await sql`ALTER TABLE snapshots ADD COLUMN IF NOT EXISTS open_interest NUMERIC`;
+  await sql`ALTER TABLE snapshots ADD COLUMN IF NOT EXISTS volume_24h NUMERIC`;
+  await sql`ALTER TABLE snapshots ADD COLUMN IF NOT EXISTS funding_score INTEGER`;
+  await sql`ALTER TABLE snapshots ADD COLUMN IF NOT EXISTS oi_score INTEGER`;
+
   // ── 2. Create indexes ─────────────────────────────────────────
   console.log('Creating indexes...');
   await sql`
@@ -318,12 +326,18 @@ async function main() {
     else if (aprPct > 3) aprScore = 75;
     else aprScore = 90;
 
+    // Historical rows get neutral funding/OI scores
+    const fundingScore = 50;
+    const oiScore = 50;
+
     const composite = Math.round(
-      ddScore * 0.30 +
-      tvlScore * 0.25 +
-      momentumScore * 0.20 +
+      ddScore * 0.25 +
+      tvlScore * 0.15 +
+      momentumScore * 0.15 +
       volScore * 0.15 +
-      aprScore * 0.10
+      aprScore * 0.05 +
+      fundingScore * 0.15 +
+      oiScore * 0.10
     );
 
     await sql`
@@ -333,7 +347,9 @@ async function main() {
           tvl_score = ${tvlScore},
           momentum_score = ${momentumScore},
           vol_score = ${volScore},
-          apr_score = ${aprScore}
+          apr_score = ${aprScore},
+          funding_score = ${fundingScore},
+          oi_score = ${oiScore}
       WHERE id = ${row.id}
     `;
     scoresComputed++;
