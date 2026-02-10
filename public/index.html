@@ -536,16 +536,18 @@ async function fetchDBLatest() {
 function computeAnalyticsFromDB(snapshots, liveData) {
   if (!snapshots || snapshots.length === 0) throw new Error('No DB snapshots');
 
-  // Build nav/pnl history from snapshots
+  // Build nav/pnl history from snapshots (skip NULL pnl rows for PnL chart)
   const navHistory = snapshots.map(s => ({
     time: new Date(s.collected_at).getTime(),
     value: parseFloat(s.nav)
   })).filter(d => d.value > 0);
 
-  const pnlHistory = snapshots.map(s => ({
-    time: new Date(s.collected_at).getTime(),
-    value: parseFloat(s.pnl)
-  }));
+  const pnlHistory = snapshots
+    .filter(s => s.pnl != null)
+    .map(s => ({
+      time: new Date(s.collected_at).getTime(),
+      value: parseFloat(s.pnl)
+    }));
 
   const currentNav = liveData ? liveData.nav : navHistory[navHistory.length - 1]?.value || 0;
   const currentPnl = liveData ? liveData.pnl : pnlHistory[pnlHistory.length - 1]?.value || 0;
@@ -629,7 +631,8 @@ function computeAnalyticsFromDB(snapshots, liveData) {
   const prior7Vol = rolling7.length > 2 ? rolling7[midIdx].vol7d : last7Vol;
   const volTrend = prior7Vol > 0 ? (last7Vol - prior7Vol) / prior7Vol : 0;
 
-  const currentApr = liveData ? liveData.apr : (snapshots[snapshots.length - 1]?.apr || 0);
+  const lastApr = snapshots[snapshots.length - 1]?.apr;
+  const currentApr = liveData ? liveData.apr : (lastApr != null ? parseFloat(lastApr) : 0);
 
   return {
     navHistory, pnlHistory, drawdownHistory, dailyReturns, rolling7, dailyNavs,

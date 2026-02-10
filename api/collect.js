@@ -1,5 +1,5 @@
 import { getDb, insertSnapshot, getSnapshots } from '../lib/db.js';
-import { fetchVaultDetails, parseVaultData, computeSignalScores, computeTrailingSignals } from '../lib/hyperliquid.js';
+import { fetchVaultDetails, parseVaultData, computeSignalScores, computeTrailingSignals, parseAllTimeframes } from '../lib/hyperliquid.js';
 
 export default async function handler(req, res) {
   // Handle CORS preflight
@@ -57,10 +57,54 @@ export default async function handler(req, res) {
 
     const inserted = await insertSnapshot(sql, snapshot);
 
+    // ── Daily gap-fill: at hour 0, backfill from month/week timeframes ──
+    let gapFilled = 0;
+    const currentHour = new Date().getUTCHours();
+    if (currentHour === 0) {
+      try {
+        const timeframes = parseAllTimeframes(raw);
+        for (const tf of ['month', 'week']) {
+          const tfData = timeframes[tf];
+          if (!tfData) continue;
+
+          const pnlMap = new Map();
+          for (const p of tfData.pnlHistory) {
+            pnlMap.set(p.time, p.value);
+          }
+
+          // Compute ATH/drawdown for this timeframe's points
+          let ath = 0;
+          let maxDD = 0;
+          for (const point of tfData.navHistory) {
+            if (point.value > ath) ath = point.value;
+            const dd = ath > 0 ? (point.value - ath) / ath : 0;
+            if (dd < maxDD) maxDD = dd;
+
+            const gapSnapshot = {
+              collected_at: new Date(point.time).toISOString(),
+              nav: point.value,
+              pnl: pnlMap.get(point.time) ?? null,
+              apr: null,
+              nav_ath: ath,
+              drawdown_pct: dd,
+              max_drawdown: maxDD,
+              allow_deposits: true
+            };
+
+            const gapInserted = await insertSnapshot(sql, gapSnapshot);
+            if (gapInserted) gapFilled++;
+          }
+        }
+      } catch (gapErr) {
+        console.warn('Gap-fill failed:', gapErr.message);
+      }
+    }
+
     return res.status(200).json({
       success: true,
       snapshot: inserted || snapshot,
-      skipped: !inserted
+      skipped: !inserted,
+      gapFilled
     });
   } catch (err) {
     console.error('Collect error:', err);
