@@ -42,7 +42,7 @@ async function main() {
   console.log('Creating indexes...');
   await sql`
     CREATE UNIQUE INDEX IF NOT EXISTS idx_snapshots_hourly
-    ON snapshots (date_trunc('hour', collected_at))
+    ON snapshots (date_trunc('hour', collected_at AT TIME ZONE 'UTC'))
   `;
   await sql`
     CREATE INDEX IF NOT EXISTS idx_snapshots_time
@@ -119,7 +119,7 @@ async function main() {
           ${p.nav}, ${p.pnl}, ${data.apr || 0}, ${null}, ${true},
           ${p.ath}, ${p.dd}, ${p.maxDD}
         )
-        ON CONFLICT (date_trunc('hour', collected_at)) DO NOTHING
+        ON CONFLICT (date_trunc('hour', collected_at AT TIME ZONE 'UTC')) DO NOTHING
         RETURNING id
       `;
       if (result.length > 0) {
